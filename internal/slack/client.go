@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	// "github.com/json-iterator/go/extra"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
@@ -155,12 +156,16 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 		innerEvent := event.InnerEvent
 		switch ev := innerEvent.Data.(type) {
 		case *slackevents.AppMentionEvent:
-			c.logger.InfoKV("Received app mention in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text)
+			c.logger.InfoKV("Received app mention in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 			messageText := c.userFrontend.RemoveBotMention(ev.Text)
 			// Add to message history
 			c.addToHistory(ev.Channel, "user", messageText)
 			// Use handleUserPrompt for app mentions too, for consistency
-			go c.handleUserPrompt(strings.TrimSpace(messageText), ev.Channel, ev.TimeStamp)
+			parentTS := ev.ThreadTimeStamp
+			if parentTS == "" {
+				parentTS = ev.TimeStamp // Use the original message timestamp if no thread
+			}
+			go c.handleUserPrompt(strings.TrimSpace(messageText), ev.Channel, parentTS)
 
 		case *slackevents.MessageEvent:
 			isDirectMessage := strings.HasPrefix(ev.Channel, "D")
@@ -169,10 +174,14 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 			isBot := ev.BotID != "" || ev.SubType == "bot_message"
 
 			if isDirectMessage && isValidUser && isNotEdited && !isBot {
-				c.logger.InfoKV("Received direct message in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text)
+				c.logger.InfoKV("Received direct message in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 				// Add to message history
 				c.addToHistory(ev.Channel, "user", ev.Text)
-				go c.handleUserPrompt(ev.Text, ev.Channel, ev.ThreadTimeStamp) // Use goroutine to avoid blocking event loop
+				parentTS := ev.ThreadTimeStamp
+				if parentTS == "" {
+					parentTS = ev.TimeStamp // Use the original message timestamp if no thread
+				}
+				go c.handleUserPrompt(ev.Text, ev.Channel, parentTS) // Use goroutine to avoid blocking event loop
 			}
 
 		default:
@@ -280,12 +289,35 @@ func (c *Client) generateToolPrompt() string {
 	promptBuilder.WriteString("You have access to the following tools. Analyze the user's request to determine if a tool is needed.\n\n")
 
 	// Clear instructions on how to format the JSON response
+	// promptBuilder.WriteString("TOOL USAGE INSTRUCTIONS:\n")
+	// promptBuilder.WriteString("1. If a tool is appropriate, respond with ONLY the JSON object in the format below. You ALWAYS have access to the current channel_id and thread_ts, even if the user did not provide them.\n")
+	// promptBuilder.WriteString("2. The JSON MUST be properly formatted with no additional text before or after.\n")
+	// promptBuilder.WriteString("3. Do NOT include explanations, markdown formatting, or extra text with the JSON.\n")
+	// promptBuilder.WriteString("4. If any required arguments are missing (except channel_id and thread_ts, which are always available), do NOT generate the JSON. Instead, ask the user for the missing information.\n")
+	// promptBuilder.WriteString("5. If no tool is needed, respond naturally to the user's request.\n")
+	// promptBuilder.WriteString("\nIMPORTANT: For every tool call, you will always have access to the following arguments:\n")
+	// promptBuilder.WriteString("- channel_id: The Slack channel ID of the current conversation\n")
+	// promptBuilder.WriteString("- thread_ts: The timestamp of the parent message for the thread (if any)\n")
+	// promptBuilder.WriteString("If a tool requires these arguments, ALWAYS include them in the tool call JSON, even if the user did not provide them. Do NOT ask the user for these values.\n\n")
+
+	// promptBuilder.WriteString("Available Tools:\n")
+	// promptBuilder.WriteString("TOOL USAGE INSTRUCTIONS:\n")
+	// promptBuilder.WriteString("1. If a tool is appropriate AND you have ALL required arguments from the user's request, respond with ONLY the JSON object.\n")
+	// promptBuilder.WriteString("2. The JSON MUST be properly formatted with no additional text before or after.\n")
+	// promptBuilder.WriteString("3. Do NOT include explanations, markdown formatting, or extra text with the JSON.\n")
+	// promptBuilder.WriteString("4. If any required arguments are missing, do NOT generate the JSON. Instead, ask the user for the missing information.\n")
+	// promptBuilder.WriteString("5. If no tool is needed, respond naturally to the user's request.\n\n")
+
 	promptBuilder.WriteString("TOOL USAGE INSTRUCTIONS:\n")
-	promptBuilder.WriteString("1. If a tool is appropriate AND you have ALL required arguments from the user's request, respond with ONLY the JSON object.\n")
-	promptBuilder.WriteString("2. The JSON MUST be properly formatted with no additional text before or after.\n")
-	promptBuilder.WriteString("3. Do NOT include explanations, markdown formatting, or extra text with the JSON.\n")
-	promptBuilder.WriteString("4. If any required arguments are missing, do NOT generate the JSON. Instead, ask the user for the missing information.\n")
-	promptBuilder.WriteString("5. If no tool is needed, respond naturally to the user's request.\n\n")
+promptBuilder.WriteString("1. If a tool is appropriate, respond with ONLY the JSON object in the format below. You ALWAYS have access to the current channel_id and thread_ts, even if the user did not provide them.\n")
+promptBuilder.WriteString("2. The JSON MUST be properly formatted with no additional text before or after.\n")
+promptBuilder.WriteString("3. Do NOT include explanations, markdown formatting, or extra text with the JSON.\n")
+promptBuilder.WriteString("4. If any required arguments are missing (except channel_id and thread_ts, which are always available), try to get it from the context by analyzing the conversation history. If you cannot find the information, do NOT generate the JSON. Instead, ask the user for the missing information.\n")
+promptBuilder.WriteString("5. If no tool is needed, respond naturally to the user's request.\n\n")
+promptBuilder.WriteString("IMPORTANT: For every tool call, you will always have access to the following arguments:\n")
+promptBuilder.WriteString("- channel_id: The Slack channel ID of the current conversation\n")
+promptBuilder.WriteString("- thread_ts: The timestamp of the parent message for the thread (if any)\n")
+promptBuilder.WriteString("If a tool requires these arguments, ALWAYS include them in the tool call JSON, even if the user did not provide them. Do NOT ask the user for these values.\n\n")
 
 	promptBuilder.WriteString("Available Tools:\n")
 
@@ -303,11 +335,11 @@ func (c *Client) generateToolPrompt() string {
 	}
 
 	// Add example formats for clarity
-	promptBuilder.WriteString("\nEXACT JSON FORMAT FOR TOOL CALLS:\n")
-	promptBuilder.WriteString("{\n")
-	promptBuilder.WriteString("  \"tool\": \"<tool_name>\",\n")
-	promptBuilder.WriteString("  \"args\": { <arguments matching the tool's input schema> }\n")
-	promptBuilder.WriteString("}\n\n")
+	// promptBuilder.WriteString("\nEXACT JSON FORMAT FOR TOOL CALLS:\n")
+	// promptBuilder.WriteString("{\n")
+	// promptBuilder.WriteString("  \"tool\": \"<tool_name>\",\n")
+	// promptBuilder.WriteString("  \"args\": { <arguments matching the tool's input schema> }\n")
+	// promptBuilder.WriteString("}\n\n")
 
 	// Add a concrete example
 	promptBuilder.WriteString("EXAMPLE:\n")
@@ -317,8 +349,36 @@ func (c *Client) generateToolPrompt() string {
 	promptBuilder.WriteString("  \"args\": { \"relative_workspace_path\": \".\" }\n")
 	promptBuilder.WriteString("}\n\n")
 
-	// Emphasize again to help model handle this correctly
-	promptBuilder.WriteString("IMPORTANT: Return ONLY the raw JSON object with no explanations or formatting when using a tool.\n")
+	promptBuilder.WriteString("EXAMPLE:\n")
+promptBuilder.WriteString("If the user asks 'Summarize this thread' and 'slack_get_thread_replies' is an available tool:\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"slack_get_thread_replies\",\n")
+promptBuilder.WriteString("  \"args\": { \"channel_id\": \"C12345678\", \"thread_ts\": \"1681234567.000100\" }\n")
+promptBuilder.WriteString("}\n\n")
+promptBuilder.WriteString("Use the actual channel_id and thread_ts for the current conversation. Do NOT use placeholder strings like 'current_channel_id' or 'current_thread_ts'.\n\n")
+
+    promptBuilder.WriteString("EXAMPLE:\n")
+promptBuilder.WriteString("If the user asks 'Create an incident based on this thread' and 'create_incident' is an available tool, and the thread contains messages about a server outage:\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"create_incident\",\n")
+promptBuilder.WriteString("  \"args\": {\n")
+promptBuilder.WriteString("    \"short_description\": \"Server outage in production\",\n")
+promptBuilder.WriteString("    \"description\": \"Multiple users reported the production server is down. 500 errors observed. Restart attempts failed.\",\n")
+promptBuilder.WriteString("    \"priority\": \"1\",\n")
+promptBuilder.WriteString("    \"impact\": \"High\"\n")
+promptBuilder.WriteString("  }\n")
+promptBuilder.WriteString("}\n\n")
+promptBuilder.WriteString("Use the actual information from the thread or conversation to fill in the arguments. Do NOT ask the user for these values if you can infer them from context.\n\n")
+
+	// promptBuilder.WriteString("EXAMPLE:\n")
+    // promptBuilder.WriteString("If the user asks 'Summarize this thread' and 'slack_get_thread_replies' is an available tool:\n")
+    // promptBuilder.WriteString("{\n")
+    // promptBuilder.WriteString("  \"tool\": \"slack_get_thread_replies\",\n")
+    // promptBuilder.WriteString("  \"args\": { \"channel_id\": \"G019N344DK6\", \"thread_ts\": \"1750246997.665799\" }\n")
+    // promptBuilder.WriteString("}\n\n")
+    // promptBuilder.WriteString("Use the actual channel_id and thread_ts for the current conversation. Do NOT use placeholder strings like 'current_channel_id' or 'current_thread_ts'.\n\n")
+	// // Emphasize again to help model handle this correctly
+	// promptBuilder.WriteString("IMPORTANT: Return ONLY the raw JSON object with no explanations or formatting when using a tool.\n")
 
 	return promptBuilder.String()
 }
@@ -335,7 +395,7 @@ func (c *Client) callLLM(providerName, prompt, contextHistory string) (string, e
 	// Prepare messages with system prompt and context history
 	messages := []llm.RequestMessage{}
 
-	// Add system prompt with tool info if available
+	// `Add system prompt with tool info if available
 	if systemPrompt != "" {
 		messages = append(messages, llm.RequestMessage{
 			Role:    "system",
@@ -385,6 +445,11 @@ func (c *Client) callLLM(providerName, prompt, contextHistory string) (string, e
 // Incorporates logic previously in LLMClient.ProcessToolResponse.
 func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, threadTS string) {
 	// Log the raw LLM response for debugging
+	extraArgs := map[string]interface{}{
+		"channel_id": channelID,
+		"thread_ts":  threadTS,
+	}
+	c.logger.DebugKV("Added extra arguments", "channel_id", channelID, "thread_ts", threadTS)
 	c.logger.DebugKV("Raw LLM response", "response", truncateForLog(llmResponse, 500))
 
 	// Create a context with timeout for tool processing
@@ -404,7 +469,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		c.logger.Warn("LLMMCPBridge is nil, skipping tool processing")
 	} else {
 		// Process the response through the bridge
-		processedResponse, err := c.llmMCPBridge.ProcessLLMResponse(ctx, llmResponse, userPrompt)
+		processedResponse, err := c.llmMCPBridge.ProcessLLMResponse(ctx, llmResponse, userPrompt, extraArgs)
 		if err != nil {
 			finalResponse = fmt.Sprintf("Sorry, I encountered an error while trying to use a tool: %v", err)
 			isToolResult = false
