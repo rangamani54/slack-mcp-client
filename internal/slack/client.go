@@ -159,7 +159,7 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 			c.logger.InfoKV("Received app mention in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 			messageText := c.userFrontend.RemoveBotMention(ev.Text)
 			// Add to message history
-			c.addToHistory(ev.Channel, "user", messageText)
+			c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", messageText)
 			// Use handleUserPrompt for app mentions too, for consistency
 			parentTS := ev.ThreadTimeStamp
 			if parentTS == "" {
@@ -176,7 +176,7 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 			if isDirectMessage && isValidUser && isNotEdited && !isBot {
 				c.logger.InfoKV("Received direct message in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 				// Add to message history
-				c.addToHistory(ev.Channel, "user", ev.Text)
+				c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", ev.Text)
 				parentTS := ev.ThreadTimeStamp
 				if parentTS == "" {
 					parentTS = ev.TimeStamp // Use the original message timestamp if no thread
@@ -192,9 +192,14 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 	}
 }
 
+func historyKey(channelID, threadTS string) string {
+	return fmt.Sprintf("%s:%s", channelID, threadTS)
+}
+
 // addToHistory adds a message to the channel history
-func (c *Client) addToHistory(channelID, role, content string) {
-	history, exists := c.messageHistory[channelID]
+func (c *Client) addToHistory(channelID, threadTS, role, content string) {
+	key := historyKey(channelID, threadTS)
+	history, exists := c.messageHistory[key]
 	if !exists {
 		history = []Message{}
 	}
@@ -212,14 +217,14 @@ func (c *Client) addToHistory(channelID, role, content string) {
 		history = history[len(history)-c.historyLimit:]
 	}
 
-	c.messageHistory[channelID] = history
+	c.messageHistory[key] = history
 }
 
 // getContextFromHistory builds a context string from message history
 //
 //nolint:unused // Reserved for future use
-func (c *Client) getContextFromHistory(channelID string) string {
-	history, exists := c.messageHistory[channelID]
+func (c *Client) getContextFromHistory(channelID string, threadTS string) string {
+	history, exists := c.messageHistory[historyKey(channelID, threadTS)]
 	if !exists || len(history) == 0 {
 		return ""
 	}
@@ -257,13 +262,13 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string) {
 	c.logger.DebugKV("Routing prompt via configured provider", "provider", providerName)
 	c.logger.DebugKV("User prompt", "text", userPrompt)
 
-	c.addToHistory(channelID, "user", userPrompt) // Add user message to history
+	c.addToHistory(channelID, threadTS, "user", userPrompt) // Add user message to history
 
 	// Show a temporary "typing" indicator
 	c.userFrontend.SendMessage(channelID, threadTS, thinkingMessage)
 
 	// Get context from history
-	contextHistory := c.getContextFromHistory(channelID)
+	contextHistory := c.getContextFromHistory(channelID, threadTS)
 
 	// Call LLM using the integrated logic
 	llmResponse, err := c.callLLM(providerName, userPrompt, contextHistory)
@@ -345,26 +350,26 @@ promptBuilder.WriteString("If a tool requires these arguments, ALWAYS include th
 	promptBuilder.WriteString("EXAMPLE:\n")
 	promptBuilder.WriteString("If the user asks 'Show me the files in the current directory' and 'list_dir' is an available tool:\n")
 	promptBuilder.WriteString("{\n")
-	promptBuilder.WriteString("  \"tool\": \"list_dir\",\n")
+	promptBuilder.WriteString("  \"tool\": \"filesystem_list_dir\",\n")
 	promptBuilder.WriteString("  \"args\": { \"relative_workspace_path\": \".\" }\n")
 	promptBuilder.WriteString("}\n\n")
 
 	promptBuilder.WriteString("EXAMPLE:\n")
 promptBuilder.WriteString("If the user asks 'Summarize this thread' and 'slack_get_thread_replies' is an available tool:\n")
 promptBuilder.WriteString("{\n")
-promptBuilder.WriteString("  \"tool\": \"slack_get_thread_replies\",\n")
+promptBuilder.WriteString("  \"tool\": \"slack-tools_slack_get_thread_replies\",\n")
 promptBuilder.WriteString("  \"args\": { \"channel_id\": \"C12345678\", \"thread_ts\": \"1681234567.000100\" }\n")
 promptBuilder.WriteString("}\n\n")
 promptBuilder.WriteString("Use the actual channel_id and thread_ts for the current conversation. Do NOT use placeholder strings like 'current_channel_id' or 'current_thread_ts'.\n\n")
 
     promptBuilder.WriteString("EXAMPLE:\n")
-promptBuilder.WriteString("If the user asks 'Create an incident based on this thread' and 'create_incident' is an available tool, and the thread contains messages about a server outage:\n")
+promptBuilder.WriteString("If the user asks 'Create an incident based on this thread' and 'create_incident' is an available tool, and the thread contains messages about a server outage, summarize the thread and create the required parameters detailly from the summary:\n")
 promptBuilder.WriteString("{\n")
-promptBuilder.WriteString("  \"tool\": \"create_incident\",\n")
+promptBuilder.WriteString("  \"tool\": \"service-now_create_incident\",\n")
 promptBuilder.WriteString("  \"args\": {\n")
 promptBuilder.WriteString("    \"short_description\": \"Server outage in production\",\n")
 promptBuilder.WriteString("    \"description\": \"Multiple users reported the production server is down. 500 errors observed. Restart attempts failed.\",\n")
-promptBuilder.WriteString("    \"priority\": \"1\",\n")
+promptBuilder.WriteString("    \"priority\": \"2\",\n")
 promptBuilder.WriteString("    \"impact\": \"High\"\n")
 promptBuilder.WriteString("  }\n")
 promptBuilder.WriteString("}\n\n")
@@ -452,7 +457,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 	c.logger.DebugKV("Added extra arguments", "channel_id", channelID, "thread_ts", threadTS)
 	c.logger.DebugKV("Raw LLM response", "response", truncateForLog(llmResponse, 500))
 
-	// Create a context with timeout for tool processing
+	// Create a context with timeout for tool processing 	
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
@@ -502,8 +507,8 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		rePrompt := fmt.Sprintf("The user asked: '%s'\n\nI used a tool and received the following result:\n```\n%s\n```\nPlease formulate a concise and helpful natural language response to the user based *only* on the user's original question and the tool result provided.", userPrompt, finalResponse)
 
 		// Add history
-		c.addToHistory(channelID, "assistant", llmResponse) // Original LLM response (tool call JSON)
-		c.addToHistory(channelID, "tool", finalResponse)    // Tool execution result
+		c.addToHistory(channelID, threadTS, "assistant", llmResponse) // Original LLM response (tool call JSON)
+		c.addToHistory(channelID, threadTS, "tool", finalResponse)    // Tool execution result
 
 		c.logger.DebugKV("Re-prompting LLM", "prompt", rePrompt)
 
@@ -511,7 +516,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		var repromptErr error
 		// Get the provider name from config again for the re-prompt
 		providerName := c.cfg.LLMProvider
-		finalResponse, repromptErr = c.callLLM(providerName, rePrompt, c.getContextFromHistory(channelID))
+		finalResponse, repromptErr = c.callLLM(providerName, rePrompt, c.getContextFromHistory(channelID, threadTS))
 		if repromptErr != nil {
 			c.logger.ErrorKV("Error during LLM re-prompt", "error", repromptErr)
 			// Fallback: Show the tool result and the error
@@ -519,7 +524,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		}
 	} else {
 		// No tool was executed, add assistant response to history
-		c.addToHistory(channelID, "assistant", finalResponse)
+		c.addToHistory(channelID, threadTS, "assistant", finalResponse)
 	}
 
 	// Send the final response back to Slack
