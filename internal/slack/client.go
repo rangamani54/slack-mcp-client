@@ -267,6 +267,31 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string) {
 	// Show a temporary "typing" indicator
 	c.userFrontend.SendMessage(channelID, threadTS, thinkingMessage)
 
+	// Fetch thread replies from slack
+	replies, err := c.userFrontend.GetThreadReplies(channelID, threadTS)
+	if err != nil {
+		c.logger.ErrorKV("Failed to fetch thread replies", "channel", channelID, "thread_ts", threadTS, "error", err)
+	} else {
+		c.logger.DebugKV("Fetched thread replies", "channel", channelID, "thread_ts", threadTS, "count", len(replies))
+		for _, reply := range replies {
+			exists := false
+			history := c.messageHistory[historyKey(channelID, threadTS)]
+			for _, msg := range history {
+				if msg.Role == "user" && msg.Content == reply.Text {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				role := "user"
+				if reply.BotID != "" {
+					role = "assistant"
+				}
+				c.addToHistory(channelID, threadTS, role, reply.Text)
+			}
+		}
+	}
+
 	// Get context from history
 	contextHistory := c.getContextFromHistory(channelID, threadTS)
 
@@ -373,7 +398,7 @@ promptBuilder.WriteString("    \"priority\": \"2\",\n")
 promptBuilder.WriteString("    \"impact\": \"High\"\n")
 promptBuilder.WriteString("  }\n")
 promptBuilder.WriteString("}\n\n")
-promptBuilder.WriteString("Use the actual information from the thread or conversation to fill in the arguments. Do NOT ask the user for these values if you can infer them from context.\n\n")
+promptBuilder.WriteString("Use the actual information from the thread or conversation to fill in the arguments. Do NOT ask the user for these values if you can infer them from context. Always return Incident number once the incident is created.\n\n")
 
 	// promptBuilder.WriteString("EXAMPLE:\n")
     // promptBuilder.WriteString("If the user asks 'Summarize this thread' and 'slack_get_thread_replies' is an available tool:\n")
@@ -457,7 +482,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 	c.logger.DebugKV("Added extra arguments", "channel_id", channelID, "thread_ts", threadTS)
 	c.logger.DebugKV("Raw LLM response", "response", truncateForLog(llmResponse, 500))
 
-	// Create a context with timeout for tool processing 	
+	// Create a context with timeout for tool processing
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 

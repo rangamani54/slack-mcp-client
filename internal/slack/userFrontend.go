@@ -23,6 +23,7 @@ type UserFrontend interface {
 	IsValidUser(userID string) bool
 	GetLogger() *logging.Logger
 	SendMessage(channelID, threadTS, text string)
+	GetThreadReplies(channelID, threadTS string) ([]slack.Message, error)
 }
 
 func getLogLevel(stdLogger *logging.Logger) logging.LogLevel {
@@ -108,6 +109,22 @@ func (slackClient *SlackClient) IsValidUser(userID string) bool {
 
 func (slackClient *SlackClient) IsBotUser(userID string) bool {
 	return userID == slackClient.botUserID
+}
+
+func (slackClient *SlackClient) GetThreadReplies(channelID, threadTS string) ([]slack.Message, error) {
+	if channelID == "" || threadTS == "" {
+		return nil, fmt.Errorf("channelID and threadTS must be provided")
+	}
+
+	replies, _, _,  err := slackClient.GetConversationReplies(&slack.GetConversationRepliesParameters{
+		ChannelID: channelID,
+		Timestamp:  threadTS,
+	})
+	if err != nil {
+		return nil, customErrors.WrapSlackError(err, "fetch_thread_replies_failed", "Failed to fetch thread replies")
+	}
+
+	return replies, nil
 }
 
 // SendMessage sends a message back to Slack, replying in a thread if threadTS is provided.
