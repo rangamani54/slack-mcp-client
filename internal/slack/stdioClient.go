@@ -92,6 +92,14 @@ func (client StdioClient) GetThreadReplies(channelID, threadTS string) ([]slack.
     return []slack.Message{}, nil
 }
 
+func (client StdioClient) GetUserInfo(userID string) (*UserProfile, error) {
+	return &UserProfile{
+		userId:   userID,
+		realName: "Real Name",
+		email:    "user@example.com",
+	}, nil
+}
+
 func (client StdioClient) SendMessage(channelID, threadTS, text string) {
 	messages := []string{
 		"----- SEND MESSAGE -----\n",

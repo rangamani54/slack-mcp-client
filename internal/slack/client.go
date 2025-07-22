@@ -42,6 +42,9 @@ type Message struct {
 	Role      string    // "user", "assistant", or "tool"
 	Content   string    // The message content
 	Timestamp time.Time // When the message was sent/received
+	UserID    string
+	RealName  string
+	Email     string
 }
 
 // NewClient creates a new Slack client instance.
@@ -158,14 +161,15 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 		case *slackevents.AppMentionEvent:
 			c.logger.InfoKV("Received app mention in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 			messageText := c.userFrontend.RemoveBotMention(ev.Text)
+			profile, _ := c.userFrontend.GetUserInfo(ev.User)
 			// Add to message history
-			c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", messageText)
+			c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", messageText, profile.userId, profile.realName, profile.email)
 			// Use handleUserPrompt for app mentions too, for consistency
 			parentTS := ev.ThreadTimeStamp
 			if parentTS == "" {
 				parentTS = ev.TimeStamp // Use the original message timestamp if no thread
 			}
-			go c.handleUserPrompt(strings.TrimSpace(messageText), ev.Channel, parentTS)
+			go c.handleUserPrompt(strings.TrimSpace(messageText), ev.Channel, parentTS, ev.User)
 
 		case *slackevents.MessageEvent:
 			isDirectMessage := strings.HasPrefix(ev.Channel, "D")
@@ -176,12 +180,13 @@ func (c *Client) handleEventMessage(event slackevents.EventsAPIEvent) {
 			if isDirectMessage && isValidUser && isNotEdited && !isBot {
 				c.logger.InfoKV("Received direct message in channel", "channel", ev.Channel, "user", ev.User, "text", ev.Text, "ThreadTS", ev.ThreadTimeStamp)
 				// Add to message history
-				c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", ev.Text)
+				profile, _ := c.userFrontend.GetUserInfo(ev.User)
+				c.addToHistory(ev.Channel, ev.ThreadTimeStamp, "user", ev.Text, profile.userId, profile.realName, profile.email)
 				parentTS := ev.ThreadTimeStamp
 				if parentTS == "" {
 					parentTS = ev.TimeStamp // Use the original message timestamp if no thread
 				}
-				go c.handleUserPrompt(ev.Text, ev.Channel, parentTS) // Use goroutine to avoid blocking event loop
+				go c.handleUserPrompt(ev.Text, ev.Channel, parentTS, ev.User) // Use goroutine to avoid blocking event loop
 			}
 
 		default:
@@ -197,7 +202,7 @@ func historyKey(channelID, threadTS string) string {
 }
 
 // addToHistory adds a message to the channel history
-func (c *Client) addToHistory(channelID, threadTS, role, content string) {
+func (c *Client) addToHistory(channelID, threadTS, role, content, userID, realName, email string) {
 	key := historyKey(channelID, threadTS)
 	history, exists := c.messageHistory[key]
 	if !exists {
@@ -209,6 +214,9 @@ func (c *Client) addToHistory(channelID, threadTS, role, content string) {
 		Role:      role,
 		Content:   content,
 		Timestamp: time.Now(),
+		UserID:    userID,
+		RealName:  realName,
+		Email:     email,
 	}
 	history = append(history, message)
 
@@ -244,8 +252,12 @@ func (c *Client) getContextFromHistory(channelID string, threadTS string) string
 			contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", prefix, sanitizedContent))
 		default: // "user" or any other role
 			prefix := "User"
+			userInfo := ""
+			if msg.UserID != "" {
+				userInfo = fmt.Sprintf(" (User: %s, Name: %s, Email: %s)", msg.UserID, msg.RealName, msg.Email)
+			}
 			sanitizedContent := strings.ReplaceAll(msg.Content, "\n", " \\n ")
-			contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", prefix, sanitizedContent))
+			contextBuilder.WriteString(fmt.Sprintf("%s: %s%s\n", prefix, sanitizedContent, userInfo))
 		}
 	}
 	contextBuilder.WriteString("---\n") // Clearer end marker
@@ -256,13 +268,15 @@ func (c *Client) getContextFromHistory(channelID string, threadTS string) string
 }
 
 // handleUserPrompt sends the user's text to the configured LLM provider.
-func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string) {
+func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS, userID string) {
 	// Determine the provider to use from config
 	providerName := c.cfg.LLMProvider // Get the primary provider name from config
 	c.logger.DebugKV("Routing prompt via configured provider", "provider", providerName)
 	c.logger.DebugKV("User prompt", "text", userPrompt)
 
-	c.addToHistory(channelID, threadTS, "user", userPrompt) // Add user message to history
+	profile, _ := c.userFrontend.GetUserInfo(userID)
+
+	c.addToHistory(channelID, threadTS, "user", userPrompt, profile.userId, profile.realName, profile.email) // Add user message to history
 
 	// Show a temporary "typing" indicator
 	c.userFrontend.SendMessage(channelID, threadTS, thinkingMessage)
@@ -287,7 +301,7 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string) {
 				if reply.BotID != "" {
 					role = "assistant"
 				}
-				c.addToHistory(channelID, threadTS, role, reply.Text)
+				c.addToHistory(channelID, threadTS, role, reply.Text, profile.userId, profile.realName, profile.email)
 			}
 		}
 	}
@@ -388,17 +402,40 @@ promptBuilder.WriteString("}\n\n")
 promptBuilder.WriteString("Use the actual channel_id and thread_ts for the current conversation. Do NOT use placeholder strings like 'current_channel_id' or 'current_thread_ts'.\n\n")
 
     promptBuilder.WriteString("EXAMPLE:\n")
-promptBuilder.WriteString("If the user asks 'Create an incident based on this thread' and 'create_incident' is an available tool, and the thread contains messages about a server outage, summarize the thread and create the required parameters detailly from the summary:\n")
+promptBuilder.WriteString("If the user asks 'Create an incident based on this thread' and 'create_incident' is an available tool, and the thread contains messages about a server outage, summarize the thread and create the required parameters detailly from the summary and always pass the caller_id which is Emaild Id <user_email@example.com> and automatically fetch the email id from user's profile information based on user id:\n")
 promptBuilder.WriteString("{\n")
 promptBuilder.WriteString("  \"tool\": \"service-now_create_incident\",\n")
 promptBuilder.WriteString("  \"args\": {\n")
 promptBuilder.WriteString("    \"short_description\": \"Server outage in production\",\n")
 promptBuilder.WriteString("    \"description\": \"Multiple users reported the production server is down. 500 errors observed. Restart attempts failed.\",\n")
 promptBuilder.WriteString("    \"priority\": \"2\",\n")
-promptBuilder.WriteString("    \"impact\": \"High\"\n")
+promptBuilder.WriteString("    \"impact\": \"High\",\n")
+promptBuilder.WriteString("    \"caller_id\": \"user@example.com\"\n")
 promptBuilder.WriteString("  }\n")
 promptBuilder.WriteString("}\n\n")
 promptBuilder.WriteString("Use the actual information from the thread or conversation to fill in the arguments. Do NOT ask the user for these values if you can infer them from context. Always return Incident number once the incident is created.\n\n")
+
+promptBuilder.WriteString("EXAMPLE:\n")
+promptBuilder.WriteString("If the user asks 'Who created this incident?' and you need to find the user's display name or email, use the tool:\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"slack-tools_slack_get_user_profile\",\n")
+promptBuilder.WriteString("  \"args\": { \"user_id\": \"U08LV31KTPV\" }\n")
+promptBuilder.WriteString("}\n\n")
+
+promptBuilder.WriteString("EXAMPLE:\n")
+promptBuilder.WriteString("If the user asks 'Get me the display names of everyone in this thread', first extract the user IDs from the thread, then call the tool for each user ID:\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"slack-tools_slack_get_user_profile\",\n")
+promptBuilder.WriteString("  \"args\": { \"user_id\": \"U0267BDPW91\" }\n")
+promptBuilder.WriteString("}\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"slack-tools_slack_get_user_profile\",\n")
+promptBuilder.WriteString("  \"args\": { \"user_id\": \"U08LV31KTPV\" }\n")
+promptBuilder.WriteString("}\n")
+promptBuilder.WriteString("{\n")
+promptBuilder.WriteString("  \"tool\": \"slack-tools_slack_get_user_profile\",\n")
+promptBuilder.WriteString("  \"args\": { \"user_id\": \"U04BFAKRPNC\" }\n")
+promptBuilder.WriteString("}\n\n")
 
 	// promptBuilder.WriteString("EXAMPLE:\n")
     // promptBuilder.WriteString("If the user asks 'Summarize this thread' and 'slack_get_thread_replies' is an available tool:\n")
@@ -532,8 +569,8 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		rePrompt := fmt.Sprintf("The user asked: '%s'\n\nI used a tool and received the following result:\n```\n%s\n```\nPlease formulate a concise and helpful natural language response to the user based *only* on the user's original question and the tool result provided.", userPrompt, finalResponse)
 
 		// Add history
-		c.addToHistory(channelID, threadTS, "assistant", llmResponse) // Original LLM response (tool call JSON)
-		c.addToHistory(channelID, threadTS, "tool", finalResponse)    // Tool execution result
+		c.addToHistory(channelID, threadTS, "assistant", llmResponse, "", "", "") // Original LLM response (tool call JSON)
+		c.addToHistory(channelID, threadTS, "tool", finalResponse, "", "", "")    // Tool execution result
 
 		c.logger.DebugKV("Re-prompting LLM", "prompt", rePrompt)
 
@@ -549,7 +586,7 @@ func (c *Client) processLLMResponseAndReply(llmResponse, userPrompt, channelID, 
 		}
 	} else {
 		// No tool was executed, add assistant response to history
-		c.addToHistory(channelID, threadTS, "assistant", finalResponse)
+		c.addToHistory(channelID, threadTS, "assistant", finalResponse, "", "", "")
 	}
 
 	// Send the final response back to Slack
