@@ -47,6 +47,7 @@ type LLMConfig struct {
 	Provider           string                       `json:"provider"`
 	UseNativeTools     bool                         `json:"useNativeTools,omitempty"`
 	UseAgent           bool                         `json:"useAgent,omitempty"`
+	ExternalAgent      ExternalAgentConfig          `json:"externalAgent,omitempty"`
 	CustomPrompt       string                       `json:"customPrompt,omitempty"`
 	CustomPromptFile   string                       `json:"customPromptFile,omitempty"`
 	ReplaceToolPrompt  bool                         `json:"replaceToolPrompt,omitempty"`
@@ -74,6 +75,12 @@ type MCPServerConfig struct {
 	Disabled                 bool              `json:"disabled,omitempty"`
 	InitializeTimeoutSeconds *int              `json:"initializeTimeoutSeconds,omitempty"`
 	Tools                    MCPToolsConfig    `json:"tools,omitempty"`
+}
+
+type ExternalAgentConfig struct {
+	Enabled    bool              `json:"enabled,omitempty"`
+	Url        string            `json:"url,omitempty"`
+	HTTPHeaders map[string]string `json:"httpHeaders,omitempty"`
 }
 
 // GetTransport returns the transport type, inferring from other fields if not explicitly set

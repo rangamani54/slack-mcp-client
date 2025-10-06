@@ -42,6 +42,13 @@ func (c *Config) ValidateAfterDefaults() error {
 		}
 	}
 
+	// Validate external agent configuration
+	if c.LLM.ExternalAgent.Enabled {
+		if c.LLM.ExternalAgent.Url == "" || strings.HasPrefix(c.LLM.ExternalAgent.Url, "${") {
+			return fmt.Errorf("EXTERNAL_AGENT_URL environment variable not set")
+		}
+	}
+
 	// Validate observability configuration
 	if c.Observability.Enabled {
 		if c.Observability.Provider == ObservabilityProviderLangfuse {
@@ -184,6 +191,9 @@ func (c *Config) SubstituteEnvironmentVariables() {
 		provider.BaseURL = substituteEnvVars(provider.BaseURL)
 		c.LLM.Providers[name] = provider
 	}
+
+	// External agent url substitution
+	c.LLM.ExternalAgent.Url = substituteEnvVars(c.LLM.ExternalAgent.Url)
 
 	// Substitute in Observability configuration
 	c.Observability.Endpoint = substituteEnvVars(c.Observability.Endpoint)

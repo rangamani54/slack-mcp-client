@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"net/http"
+	"io"
 
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -48,6 +50,22 @@ type Message struct {
 	UserID         string
 	RealName       string
 	Email          string
+}
+
+// type ExternalAgentPostRequest struct {
+// 	UserPrompt     string
+// 	ChannelID      string
+// 	ThreadTS       string
+// 	ContextHistory string
+// 	UserProfile    UserProfile
+// }
+
+type ExternalAgentResponse struct {
+	Success        bool   `json:"success"`
+	Content        string `json:"content"`
+	IsToolResult   bool   `json:"is_tool_result"`
+	ContextHistory []Message `json:"context_history"`
+	Error          string `json:"error"`
 }
 
 // NewClient creates a new Slack client instance.
@@ -292,7 +310,19 @@ func historyKey(channelID, threadTS string) string {
 	return fmt.Sprintf("%s:%s", channelID, threadTS)
 }
 
-// addToHistory adds a message to the channel history
+// concatenateAgentContextHistoryToHistory concatenates the agent context history to the channel-thread history
+func (c *Client) concatenateAgentContextHistoryToHistory(channelID, threadTS string, contextHistory []Message) {
+	key := historyKey(channelID, threadTS)
+	history, exists := c.messageHistory[key]
+	if !exists {
+		history = []Message{}
+	}
+	history = append(history, contextHistory...)
+	c.logger.DebugKV("Updated message history", "key", key, "history", history)
+	c.messageHistory[key] = history
+}
+
+// addToHistory adds a message to the channel-thread history
 func (c *Client) addToHistory(channelID, threadTS, timestamp, role, content, userID, realName, email string) {
 	key := historyKey(channelID, threadTS)
 	history, exists := c.messageHistory[key]
@@ -386,7 +416,8 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		}
 		for _, reply := range replies {
 			// replyKey := fmt.Sprintf("%s:%s", reply.User, reply.Text)
-			if !existingMessages[reply.Timestamp] {
+			// Avoid adding duplicates and skip the original message
+			if !existingMessages[reply.Timestamp] && reply.Timestamp != timestamp {
 				role := "user"
 				if reply.BotID != "" {
 					role = "assistant"
@@ -466,6 +497,97 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 
 		// Process the LLM response through the MCP pipeline
 		c.processLLMResponseAndReply(llmCtx, llmResponse, userPrompt, channelID, threadTS)
+	} else if c.cfg.LLM.ExternalAgent.Enabled && c.cfg.LLM.UseAgent {
+		// External routing agent
+		_, agentSpan := c.tracingHandler.StartSpan(ctx, "llm-external-agent-call", "generation", userPrompt, map[string]string{
+			"provider":        c.cfg.LLM.Provider,
+			"is_external_agent": "true",
+		})
+
+		startTime := time.Now()
+
+		// Convert struct to map with JSON field names for compatibility
+		reqMap := map[string]interface{}{
+			"user_prompt":     userPrompt,
+			"channel_id":      channelID,
+			"thread_ts":       threadTS,
+			"context_history": contextHistory,
+			"user_profile": map[string]interface{}{
+				"user_id":   profile.userId,
+				"real_name": profile.realName,
+				"email":    profile.email,
+			},
+		}
+		// Use reqMap for marshaling
+		jsonData, err := json.Marshal(reqMap)
+		if err != nil {
+			c.logger.ErrorKV("Failed to marshal agent request", "error", err)
+			c.userFrontend.SendMessage(channelID, threadTS, "Sorry, I couldn't prepare the agent request.")
+			agentSpan.End()
+			return
+		}
+		c.logger.InfoKV("Sending request to router agent", "url", c.cfg.LLM.ExternalAgent.Url, "request_json", string(jsonData))
+		AgentResponse, err := http.Post(c.cfg.LLM.ExternalAgent.Url, "application/json", strings.NewReader(string(jsonData)))
+		if err != nil {
+			c.logger.ErrorKV("Error to send external agent request", "external agent", c.cfg.LLM.ExternalAgent.Url, "error", err)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the external agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, err))
+			c.tracingHandler.RecordError(agentSpan, err, "ERROR")
+			agentSpan.End()
+			return
+		}
+		defer AgentResponse.Body.Close()
+		duration := time.Since(startTime)
+		// Set duration
+		c.tracingHandler.SetDuration(agentSpan, duration)
+		body, err := io.ReadAll(AgentResponse.Body)
+		if err != nil {
+			c.logger.ErrorKV("Failed to read agent response body", "error", err)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I couldn't read the response from the agent: %v", err))
+			agentSpan.End()
+			return
+		}
+		if AgentResponse.StatusCode != http.StatusOK {
+			c.logger.ErrorKV("Error from LLM provider", "provider", c.cfg.LLM.Provider, "status", AgentResponse.Status)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the LLM provider ('%s'): %v", c.cfg.LLM.Provider, err))
+			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("LLM provider returned non-200 status: %s-%s", AgentResponse.Status, string(body)), "ERROR")
+			agentSpan.End()
+			return
+		}
+		c.logger.DebugKV("LLM agent call succeeded", "body", string(body))
+		var llmResponse ExternalAgentResponse
+		err = json.Unmarshal(body, &llmResponse)
+		if err != nil {
+			c.logger.ErrorKV("Failed to unmarshal agent response", "error", err)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I couldn't process the response from the agent: %v", err))
+			c.tracingHandler.RecordError(agentSpan, err, "ERROR")
+			agentSpan.End()
+			return
+		}
+		if !llmResponse.Success {
+			c.logger.ErrorKV("Error Response from External Agent", "External Agent", c.cfg.LLM.ExternalAgent.Url, "error", llmResponse.Error)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the external agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, llmResponse.Error))
+			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("External agent returned error: %s", llmResponse.Error), "ERROR")
+			agentSpan.End()
+			return
+		}
+		c.logger.InfoKV("Received response from LLM", "provider", c.cfg.LLM.Provider, "length", len(llmResponse.Content))
+		c.userFrontend.SendMessage(channelID, threadTS, llmResponse.Content)
+		// Set Output
+		c.tracingHandler.SetOutput(agentSpan, llmResponse.Content)
+		c.logger.DebugKV("LLM agent call succeeded", "response", llmResponse.Content)
+		c.logger.DebugKV("LLM agent call succeeded", "context_history", llmResponse.ContextHistory)
+		c.logger.DebugKV("LLM agent call succeeded", "llm_response", llmResponse)
+		c.concatenateAgentContextHistoryToHistory(channelID, threadTS, llmResponse.ContextHistory)
+
+		// Send the final response back to Slack
+		if llmResponse.Content == "" {
+			c.userFrontend.SendMessage(channelID, threadTS, "(LLM returned an empty response)")
+			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("LLM returned an empty response"), "ERROR")
+
+		} else {
+			c.tracingHandler.RecordSuccess(agentSpan, "LLM agent call succeeded")
+		}
+		agentSpan.End()
 	} else {
 		// Agent path with enhanced tracing
 		agentCtx, agentSpan := c.tracingHandler.StartSpan(ctx, "llm-agent-call", "generation", userPrompt, map[string]string{

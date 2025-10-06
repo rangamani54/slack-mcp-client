@@ -21,7 +21,7 @@
           "pattern": "^(xoxb-|\\$\\{[A-Z_]+\\}).*"
         },
         "appToken": {
-          "type": "string", 
+          "type": "string",
           "description": "Slack app token (xapp-*) or environment variable reference (${SLACK_APP_TOKEN})",
           "pattern": "^(xapp-|\\$\\{[A-Z_]+\\}).*"
         }
@@ -46,6 +46,26 @@
           "type": "boolean",
           "default": false,
           "description": "Enable agent mode for multi-step reasoning"
+        },
+        "externalAgent:": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable external routing agent"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "URL of the external routing agent"
+            },
+            "httpHeaders": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Optional HTTP headers with env-var substitution"
+            }
+          }
         },
         "customPrompt": {
           "type": "string",
@@ -254,7 +274,7 @@
           "description": "Only allow these tools (if specified, blocks all others)"
         },
         "blockList": {
-          "type": "array", 
+          "type": "array",
           "items": {
             "type": "string"
           },
@@ -292,4 +312,4 @@
       "additionalProperties": false
     }
   }
-} 
+}
