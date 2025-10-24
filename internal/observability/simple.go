@@ -253,6 +253,18 @@ func (p *SimpleProvider) IsEnabled() bool {
 	return p.enabled
 }
 
+func (p *SimpleProvider) GetTraceID(ctx context.Context) string  {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.TraceID().String()
+}
+
 // Helper methods
 func (p *SimpleProvider) getServiceName() string {
 	if p.config != nil && p.config.ServiceName != "" {

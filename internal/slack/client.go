@@ -6,11 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
-	"net/http"
-	"io"
 
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
@@ -56,16 +56,15 @@ type Message struct {
 // 	UserPrompt     string
 // 	ChannelID      string
 // 	ThreadTS       string
-// 	ContextHistory string
+// 	MessageHistory []Message
 // 	UserProfile    UserProfile
 // }
 
 type ExternalAgentResponse struct {
-	Success        bool   `json:"success"`
-	Content        string `json:"content"`
-	IsToolResult   bool   `json:"is_tool_result"`
-	ContextHistory []Message `json:"context_history"`
-	Error          string `json:"error"`
+	Success      bool   `json:"success"`
+	Content      string `json:"content"`
+	IsToolResult bool   `json:"is_tool_result"`
+	Error        string `json:"error"`
 }
 
 // NewClient creates a new Slack client instance.
@@ -311,16 +310,16 @@ func historyKey(channelID, threadTS string) string {
 }
 
 // concatenateAgentContextHistoryToHistory concatenates the agent context history to the channel-thread history
-func (c *Client) concatenateAgentContextHistoryToHistory(channelID, threadTS string, contextHistory []Message) {
-	key := historyKey(channelID, threadTS)
-	history, exists := c.messageHistory[key]
-	if !exists {
-		history = []Message{}
-	}
-	history = append(history, contextHistory...)
-	c.logger.DebugKV("Updated message history", "key", key, "history", history)
-	c.messageHistory[key] = history
-}
+// func (c *Client) concatenateAgentContextHistoryToHistory(channelID, threadTS string, contextHistory []Message) {
+// 	key := historyKey(channelID, threadTS)
+// 	history, exists := c.messageHistory[key]
+// 	if !exists {
+// 		history = []Message{}
+// 	}
+// 	history = append(history, contextHistory...)
+// 	c.logger.DebugKV("Updated message history", "key", key, "history", history)
+// 	c.messageHistory[key] = history
+// }
 
 // addToHistory adds a message to the channel-thread history
 func (c *Client) addToHistory(channelID, threadTS, timestamp, role, content, userID, realName, email string) {
@@ -500,22 +499,35 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 	} else if c.cfg.LLM.ExternalAgent.Enabled && c.cfg.LLM.UseAgent {
 		// External routing agent
 		_, agentSpan := c.tracingHandler.StartSpan(ctx, "llm-external-agent-call", "generation", userPrompt, map[string]string{
-			"provider":        c.cfg.LLM.Provider,
+			"provider":          c.cfg.LLM.Provider,
 			"is_external_agent": "true",
 		})
 
 		startTime := time.Now()
 
 		// Convert struct to map with JSON field names for compatibility
+		// Get raw message history instead of processed context string
+		key := historyKey(channelID, threadTS)
+		messageHistory, exists := c.messageHistory[key]
+		if !exists {
+			messageHistory = []Message{}
+		}
+
+		// Extract trace ID for distributed tracing
+		traceID := c.tracingHandler.GetTraceID(ctx)
+		sessionID := fmt.Sprintf("%s_%s", channelID, threadTS)
+
 		reqMap := map[string]interface{}{
 			"user_prompt":     userPrompt,
 			"channel_id":      channelID,
 			"thread_ts":       threadTS,
-			"context_history": contextHistory,
+			"message_history": messageHistory, // Send raw message history instead of context_history
+			"trace_id":        traceID,        // Add trace ID for distributed tracing
+			"session_id":      sessionID,      // Add session ID for correlation
 			"user_profile": map[string]interface{}{
 				"user_id":   profile.userId,
 				"real_name": profile.realName,
-				"email":    profile.email,
+				"email":     profile.email,
 			},
 		}
 		// Use reqMap for marshaling
@@ -575,9 +587,8 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		// Set Output
 		c.tracingHandler.SetOutput(agentSpan, llmResponse.Content)
 		c.logger.DebugKV("LLM agent call succeeded", "response", llmResponse.Content)
-		c.logger.DebugKV("LLM agent call succeeded", "context_history", llmResponse.ContextHistory)
 		c.logger.DebugKV("LLM agent call succeeded", "llm_response", llmResponse)
-		c.concatenateAgentContextHistoryToHistory(channelID, threadTS, llmResponse.ContextHistory)
+		// Note: Router agent now maintains its own context, no need to concatenate back
 
 		// Send the final response back to Slack
 		if llmResponse.Content == "" {
@@ -879,10 +890,11 @@ func (c *Client) processLLMResponseAndReply(traceCtx context.Context, llmRespons
 			c.tracingHandler.RecordSuccess(repromptSpan, "LLM re-prompt successful")
 		}
 		repromptSpan.End()
-	} else {
-		// No tool was executed, add assistant response to history
-		c.addToHistory(channelID, threadTS, "", "assistant", finalResponse, "", "", "")
 	}
+	// else {
+	// 	// No tool was executed, add assistant response to history
+	// 	c.addToHistory(channelID, threadTS, "", "assistant", finalResponse, "", "", "")
+	// }
 
 	// Start message sending span
 	_, msgSpan := c.tracingHandler.StartSpan(ctx, "slack-message-send", "event", userPrompt, map[string]string{

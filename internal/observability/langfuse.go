@@ -270,6 +270,18 @@ func (p *LangfuseProvider) IsEnabled() bool {
 	return p.enabled
 }
 
+func (p *LangfuseProvider) GetTraceID(ctx context.Context) string  {
+	span := OtelTrace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.TraceID().String()
+}
+
 // Helper methods
 func (p *LangfuseProvider) getServiceName() string {
 	if p.config != nil && p.config.ServiceName != "" {

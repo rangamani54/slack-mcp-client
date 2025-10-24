@@ -39,6 +39,9 @@ type TracingHandler interface {
 	// Provider info
 	GetProvider() TracingProvider
 	IsEnabled() bool
+
+	// Get Trace id from context
+	GetTraceID(ctx context.Context) string
 }
 
 // noOpHandler is an embedded struct that provides no-op implementations
@@ -78,6 +81,10 @@ func (n noOpHandler) GetProvider() TracingProvider {
 
 func (n noOpHandler) IsEnabled() bool {
 	return false
+}
+
+func (n noOpHandler) GetTraceID(ctx context.Context) string {
+	return ""
 }
 
 // disabledHandler is the concrete implementation for disabled tracing
