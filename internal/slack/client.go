@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,17 +26,21 @@ import (
 	"github.com/tuannvm/slack-mcp-client/internal/mcp"
 	"github.com/tuannvm/slack-mcp-client/internal/observability"
 	"github.com/tuannvm/slack-mcp-client/internal/rag"
+	"github.com/tuannvm/slack-mcp-client/internal/slack/formatter"
 )
 
 // Client represents the Slack client application.
 type Client struct {
-	logger          *logging.Logger // Structured logger
-	userFrontend    UserFrontend
-	mcpClients      map[string]*mcp.Client
-	llmMCPBridge    *handlers.LLMMCPBridge
-	llmRegistry     *llm.ProviderRegistry // LLM provider registry
-	cfg             *config.Config        // Holds the application configuration
-	messageHistory  map[string][]Message
+	logger         *logging.Logger // Structured logger
+	userFrontend   UserFrontend
+	mcpClients     map[string]*mcp.Client
+	llmMCPBridge   *handlers.LLMMCPBridge
+	llmRegistry    *llm.ProviderRegistry // LLM provider registry
+	cfg            *config.Config        // Holds the application configuration
+	messageHistory map[string][]Message
+	// Delta handshake & occasional snapshot
+	lastIngestedTS  map[string]string // key=historyKey(channelID, threadTS)
+	turnCounter     map[string]int    // to trigger periodic snapshot
 	historyLimit    int
 	discoveredTools map[string]mcp.ToolInfo
 	tracingHandler  observability.TracingHandler
@@ -61,10 +66,74 @@ type Message struct {
 // }
 
 type ExternalAgentResponse struct {
-	Success      bool   `json:"success"`
-	Content      string `json:"content"`
-	IsToolResult bool   `json:"is_tool_result"`
-	Error        string `json:"error"`
+	Success        bool   `json:"success"`
+	Content        string `json:"content"`
+	IsToolResult   bool   `json:"is_tool_result"`
+	Error          string `json:"error"`
+	LastIngestedTS string `json:"last_ingested_ts"`
+	TraceID        string `json:"trace_id"`
+	TraceURL       string `json:"trace_url"`
+}
+
+// --- Slack timestamp helpers (no sorting, just comparison) ---
+func splitTS(ts string) (int, int) {
+	// "seconds.fraction" → (seconds, fraction) as ints
+	a, b := 0, 0
+	parts := strings.SplitN(ts, ".", 2)
+	if len(parts) > 0 {
+		a, _ = strconv.Atoi(parts[0])
+	}
+	if len(parts) > 1 {
+		b, _ = strconv.Atoi(parts[1])
+	}
+	return a, b
+}
+
+// compareTS returns -1 if a<b, 0 if equal, 1 if a>b
+func compareTS(a, b string) int {
+	if b == "" {
+		return 1
+	}
+	ai, af := splitTS(a)
+	bi, bf := splitTS(b)
+	if ai != bi {
+		if ai < bi {
+			return -1
+		}
+		return 1
+	}
+	if af != bf {
+		if af < bf {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+// filterConfirmed keeps only Slack-confirmed messages (those with SlackTimestamp)
+func filterConfirmed(msgs []Message) []Message {
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.SlackTimestamp != "" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// filterSince keeps only messages with ts > since (chronological order assumed)
+func filterSince(msgs []Message, since string) []Message {
+	if since == "" {
+		return msgs
+	}
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.SlackTimestamp != "" && compareTS(m.SlackTimestamp, since) > 0 {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // NewClient creates a new Slack client instance.
@@ -216,6 +285,8 @@ func NewClient(userFrontend UserFrontend, stdLogger *logging.Logger, mcpClients 
 		cfg:             cfg,
 		messageHistory:  make(map[string][]Message),
 		historyLimit:    cfg.Slack.MessageHistory, // Store configured number of messages per channel
+		lastIngestedTS:  make(map[string]string),
+		turnCounter:     make(map[string]int),
 		discoveredTools: discoveredTools,
 		tracingHandler:  tracingHandler,
 	}, nil
@@ -498,7 +569,7 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		c.processLLMResponseAndReply(llmCtx, llmResponse, userPrompt, channelID, threadTS)
 	} else if c.cfg.LLM.ExternalAgent.Enabled && c.cfg.LLM.UseAgent {
 		// External routing agent
-		_, agentSpan := c.tracingHandler.StartSpan(ctx, "llm-external-agent-call", "generation", userPrompt, map[string]string{
+		agentCtx, agentSpan := c.tracingHandler.StartSpan(ctx, "llm-external-agent-call", "generation", userPrompt, map[string]string{
 			"provider":          c.cfg.LLM.Provider,
 			"is_external_agent": "true",
 		})
@@ -515,21 +586,66 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 
 		// Extract trace ID for distributed tracing
 		traceID := c.tracingHandler.GetTraceID(ctx)
+		spanID := c.tracingHandler.GetSpanID(agentCtx)
 		sessionID := fmt.Sprintf("%s_%s", channelID, threadTS)
+
+		// reqMap := map[string]interface{}{
+		// 	"user_prompt":     userPrompt,
+		// 	"channel_id":      channelID,
+		// 	"thread_ts":       threadTS,
+		// 	"message_history": messageHistory, // Send raw message history instead of context_history
+		// 	"trace_id":        traceID,        // Add trace ID for distributed tracing
+		// 	"session_id":      sessionID,      // Add session ID for correlation
+		// 	"user_profile": map[string]interface{}{
+		// 		"user_id":   profile.userId,
+		// 		"real_name": profile.realName,
+		// 		"email":     profile.email,
+		// 	},
+		// }
+
+		// Build delta or snapshot payload (no sorting; Slack replies already chronological)
+		confirmed := filterConfirmed(messageHistory)
+
+		// handshake + cadence: delta by default, snapshot occasionally
+		const snapshotEvery = 10 // tune as you like
+		c.turnCounter[key]++
+		since := c.lastIngestedTS[key]
+		historyMode := "delta"
+		toSend := confirmed
+
+		if since != "" {
+			toSend = filterSince(confirmed, since)
+			if len(toSend) == 0 {
+				// cheap no-op delta is fine
+				toSend = []Message{}
+			}
+		} else {
+			// first time for this thread: send snapshot
+			historyMode = "snapshot"
+		}
+		// periodic snapshot to reconcile edits/deletes
+		if c.turnCounter[key]%snapshotEvery == 0 {
+			historyMode = "snapshot"
+			toSend = confirmed
+		}
 
 		reqMap := map[string]interface{}{
 			"user_prompt":     userPrompt,
 			"channel_id":      channelID,
 			"thread_ts":       threadTS,
-			"message_history": messageHistory, // Send raw message history instead of context_history
-			"trace_id":        traceID,        // Add trace ID for distributed tracing
-			"session_id":      sessionID,      // Add session ID for correlation
+			"message_history": toSend,      // delta or snapshot (Slack-confirmed only)
+			"history_mode":    historyMode, // "delta" or "snapshot"
+			"since_ts":        since,       // for observability only; router trusts its own state
+			"trace_id":        traceID,
+			"span_id":        spanID,
+			"session_id":      sessionID,
 			"user_profile": map[string]interface{}{
 				"user_id":   profile.userId,
 				"real_name": profile.realName,
 				"email":     profile.email,
 			},
 		}
+
 		// Use reqMap for marshaling
 		jsonData, err := json.Marshal(reqMap)
 		if err != nil {
@@ -559,9 +675,9 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 			return
 		}
 		if AgentResponse.StatusCode != http.StatusOK {
-			c.logger.ErrorKV("Error from LLM provider", "provider", c.cfg.LLM.Provider, "status", AgentResponse.Status)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the LLM provider ('%s'): %v", c.cfg.LLM.Provider, err))
-			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("LLM provider returned non-200 status: %s-%s", AgentResponse.Status, string(body)), "ERROR")
+			c.logger.ErrorKV("Error from External Agent", c.cfg.LLM.ExternalAgent.Url, "status", AgentResponse.Status)
+			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the External Agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, err))
+			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("External Agent returned non-200 status: %s-%s", AgentResponse.Status, string(body)), "ERROR")
 			agentSpan.End()
 			return
 		}
@@ -582,13 +698,31 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 			agentSpan.End()
 			return
 		}
-		c.logger.InfoKV("Received response from LLM", "provider", c.cfg.LLM.Provider, "length", len(llmResponse.Content))
-		c.userFrontend.SendMessage(channelID, threadTS, llmResponse.Content)
+		c.logger.InfoKV("Received response from External Agent", c.cfg.LLM.ExternalAgent.Url, "length", len(llmResponse.Content))
+		final := llmResponse.Content
+		if c.cfg.Slack.TemplateResponse && llmResponse.TraceURL != "" {
+			c.logger.InfoKV("Templating response", "channel_id", channelID, "thread_ts", threadTS)
+			footer := "Checkout trace: " + formatter.Link(strings.TrimSpace(llmResponse.TraceURL), "open")
+			jsonData := formatter.CreateBlockMessage(formatter.FormatMarkdown(final), formatter.BlockOptions{
+				FooterMrkdwn:        footer,
+				DividerBeforeFooter: true,
+			})
+			c.userFrontend.SendMessage(channelID, threadTS, jsonData)
+		} else {
+			c.userFrontend.SendMessage(channelID, threadTS, final)
+		}
 		// Set Output
-		c.tracingHandler.SetOutput(agentSpan, llmResponse.Content)
-		c.logger.DebugKV("LLM agent call succeeded", "response", llmResponse.Content)
+		c.tracingHandler.SetOutput(agentSpan, final)
+		c.tracingHandler.SetOutput(span, final)
+
+		c.logger.DebugKV("LLM agent call succeeded", "response", final)
 		c.logger.DebugKV("LLM agent call succeeded", "llm_response", llmResponse)
-		// Note: Router agent now maintains its own context, no need to concatenate back
+
+		if llmResponse.LastIngestedTS != "" {
+			key := historyKey(channelID, threadTS)
+			c.lastIngestedTS[key] = llmResponse.LastIngestedTS
+			c.logger.DebugKV("Updated last ingested TS for history", "key", key, "last_ingested_ts", llmResponse.LastIngestedTS)
+		}
 
 		// Send the final response back to Slack
 		if llmResponse.Content == "" {

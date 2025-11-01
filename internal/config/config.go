@@ -36,10 +36,11 @@ type Config struct {
 
 // SlackConfig contains Slack-specific configuration
 type SlackConfig struct {
-	BotToken        string `json:"botToken"`
-	AppToken        string `json:"appToken"`
-	MessageHistory  int    `json:"messageHistory,omitempty"`  // Max messages to keep in history per channel (default: 50)
-	ThinkingMessage string `json:"thinkingMessage,omitempty"` // Custom "thinking" message (default: "Thinking...")
+	BotToken         string `json:"botToken"`
+	AppToken         string `json:"appToken"`
+	MessageHistory   int    `json:"messageHistory,omitempty"`   // Max messages to keep in history per channel (default: 50)
+	ThinkingMessage  string `json:"thinkingMessage,omitempty"`  // Custom "thinking" message (default: "Thinking...")
+	TemplateResponse bool   `json:"templateResponse,omitempty"` // Whether to template responses (default: false)
 }
 
 // LLMConfig contains LLM provider configuration
@@ -78,8 +79,8 @@ type MCPServerConfig struct {
 }
 
 type ExternalAgentConfig struct {
-	Enabled    bool              `json:"enabled,omitempty"`
-	Url        string            `json:"url,omitempty"`
+	Enabled     bool              `json:"enabled,omitempty"`
+	Url         string            `json:"url,omitempty"`
 	HTTPHeaders map[string]string `json:"httpHeaders,omitempty"`
 }
 

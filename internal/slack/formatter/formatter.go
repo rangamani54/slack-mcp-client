@@ -39,9 +39,11 @@ func DefaultOptions() FormatOptions {
 
 // BlockOptions contains options for Block Kit messages
 type BlockOptions struct {
-	HeaderText string
-	Fields     []Field
-	Actions    []Action
+	HeaderText          string
+	Fields              []Field
+	Actions             []Action
+	FooterMrkdwn        string
+	DividerBeforeFooter bool
 }
 
 // Field represents a field in a section block
@@ -116,6 +118,29 @@ func FormatMessage(text string, options FormatOptions) []slack.MsgOption {
 					var context slack.ContextBlock
 					if err := json.Unmarshal(blockJSON, &context); err == nil {
 						slackBlock = context
+					}
+					// Build context manually to ensure elements are preserved
+					if raw, ok := blockMap["elements"].([]interface{}); ok && len(raw) > 0 {
+						elems := make([]slack.MixedElement, 0, len(raw))
+						for _, it := range raw {
+							m, ok := it.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							t, _ := m["type"].(string)
+							txt, _ := m["text"].(string)
+							if txt == "" {
+								continue
+							}
+							if t == "mrkdwn" {
+								elems = append(elems, slack.NewTextBlockObject(slack.MarkdownType, txt, false, false))
+							} else {
+								elems = append(elems, slack.NewTextBlockObject(slack.PlainTextType, txt, false, false))
+							}
+						}
+						if len(elems) > 0 {
+							slackBlock = slack.NewContextBlock("", elems...)
+						}
 					}
 					// Add more block types as needed
 				}
@@ -217,6 +242,26 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 			"text": map[string]interface{}{
 				"type": "mrkdwn",
 				"text": sectionText,
+			},
+		})
+	}
+
+	// Optionally add a divider before the footer
+	if blockOptions.DividerBeforeFooter && blockOptions.FooterMrkdwn != "" {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "divider",
+		})
+	}
+
+	// Add footer if provided
+	if blockOptions.FooterMrkdwn != "" {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "context",
+			"elements": []map[string]interface{}{
+				{
+					"type": "mrkdwn",
+					"text": blockOptions.FooterMrkdwn,
+				},
 			},
 		})
 	}

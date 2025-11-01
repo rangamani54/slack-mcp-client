@@ -25,6 +25,7 @@ type TracingHandler interface {
 	StartLLMSpan(ctx context.Context, name string, model string, input string, parameters map[string]interface{}) (context.Context, trace.Span)
 
 	// Span attribute setters
+	SetInput(span trace.Span, input string)
 	SetOutput(span trace.Span, output string)
 	SetTokenUsage(span trace.Span, promptTokens, completionTokens, reasoningTokens, totalTokens int)
 	SetDuration(span trace.Span, duration time.Duration)
@@ -42,6 +43,9 @@ type TracingHandler interface {
 
 	// Get Trace id from context
 	GetTraceID(ctx context.Context) string
+
+	// Get Span id from context
+	GetSpanID(ctx context.Context) string
 }
 
 // noOpHandler is an embedded struct that provides no-op implementations
@@ -59,6 +63,8 @@ func (n noOpHandler) StartSpan(ctx context.Context, name string, spanType string
 func (n noOpHandler) StartLLMSpan(ctx context.Context, name string, model string, input string, parameters map[string]interface{}) (context.Context, trace.Span) {
 	return ctx, trace.SpanFromContext(ctx)
 }
+
+func (n noOpHandler) SetInput(span trace.Span, input string) {}
 
 func (n noOpHandler) SetOutput(span trace.Span, output string) {}
 
@@ -84,6 +90,10 @@ func (n noOpHandler) IsEnabled() bool {
 }
 
 func (n noOpHandler) GetTraceID(ctx context.Context) string {
+	return ""
+}
+
+func (n noOpHandler) GetSpanID(ctx context.Context) string {
 	return ""
 }
 

@@ -180,6 +180,13 @@ func (p *SimpleProvider) StartLLMSpan(ctx context.Context, name string, model st
 	return spanCtx, span
 }
 
+func (p *SimpleProvider) SetInput(span trace.Span, input string) {
+	span.SetAttributes(
+		attribute.String("input.value", input),
+		attribute.Int("input.length", len(input)),
+	)
+}
+
 func (p *SimpleProvider) SetOutput(span trace.Span, output string) {
 	span.SetAttributes(
 		attribute.String("output.value", output),
@@ -253,7 +260,7 @@ func (p *SimpleProvider) IsEnabled() bool {
 	return p.enabled
 }
 
-func (p *SimpleProvider) GetTraceID(ctx context.Context) string  {
+func (p *SimpleProvider) GetTraceID(ctx context.Context) string {
 	span := trace.SpanFromContext(ctx)
 	if span == nil {
 		return ""
@@ -263,6 +270,18 @@ func (p *SimpleProvider) GetTraceID(ctx context.Context) string  {
 		return ""
 	}
 	return sc.TraceID().String()
+}
+
+func (p *SimpleProvider) GetSpanID(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.SpanID().String()
 }
 
 // Helper methods

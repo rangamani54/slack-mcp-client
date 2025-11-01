@@ -189,6 +189,13 @@ func (p *LangfuseProvider) StartLLMSpan(ctx context.Context, name string, model 
 	return spanCtx, span
 }
 
+func (p *LangfuseProvider) SetInput(span OtelTrace.Span, input string) {
+	span.SetAttributes(
+		attribute.String("langfuse.observation.input", input),
+		attribute.String("langfuse.trace.input", input), // Will be overridden by child spans
+	)
+}
+
 func (p *LangfuseProvider) SetOutput(span OtelTrace.Span, output string) {
 	span.SetAttributes(
 		attribute.String("langfuse.observation.output", output),
@@ -270,7 +277,7 @@ func (p *LangfuseProvider) IsEnabled() bool {
 	return p.enabled
 }
 
-func (p *LangfuseProvider) GetTraceID(ctx context.Context) string  {
+func (p *LangfuseProvider) GetTraceID(ctx context.Context) string {
 	span := OtelTrace.SpanFromContext(ctx)
 	if span == nil {
 		return ""
@@ -280,6 +287,18 @@ func (p *LangfuseProvider) GetTraceID(ctx context.Context) string  {
 		return ""
 	}
 	return sc.TraceID().String()
+}
+
+func (p *LangfuseProvider) GetSpanID(ctx context.Context) string {
+	span := OtelTrace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+	return sc.SpanID().String()
 }
 
 // Helper methods
