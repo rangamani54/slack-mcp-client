@@ -201,7 +201,6 @@ func (c *Config) SubstituteEnvironmentVariables() {
 	c.Observability.SecretKey = substituteEnvVars(c.Observability.SecretKey)
 	c.Observability.ServiceName = substituteEnvVars(c.Observability.ServiceName)
 	c.Observability.ServiceVersion = substituteEnvVars(c.Observability.ServiceVersion)
-
 }
 
 // substituteEnvVars replaces ${VAR_NAME} patterns with environment variable values

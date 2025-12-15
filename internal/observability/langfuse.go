@@ -117,7 +117,7 @@ func (p *LangfuseProvider) StartTrace(ctx context.Context, name string, input st
 		attribute.String("langfuse.trace.input", input),
 		attribute.String("langfuse.release", p.getServiceVersion()),
 		attribute.String("langfuse.environment", p.getEnvironment()),
-		attribute.Bool("langfuse.trace.public", true),
+		attribute.Bool("langfuse.trace.public", p.config.Public),
 	)
 
 	// Add metadata with Langfuse prefix for queryability

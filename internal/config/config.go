@@ -178,6 +178,7 @@ type ObservabilityConfig struct {
 	SecretKey      string `json:"secretKey,omitempty"`
 	ServiceName    string `json:"serviceName,omitempty"`
 	ServiceVersion string `json:"serviceVersion,omitempty"`
+	Public         bool   `json:"public,omitempty"`
 }
 
 // ApplyDefaults applies default values to the configuration
