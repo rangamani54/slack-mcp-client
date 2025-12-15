@@ -284,6 +284,24 @@ func (p *SimpleProvider) GetSpanID(ctx context.Context) string {
 	return sc.SpanID().String()
 }
 
+func (p *SimpleProvider) UpdateTraceInput(input string) {
+	span := trace.SpanFromContext(context.Background())
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("trace.input", input),
+		)
+	}
+}
+
+func (p *SimpleProvider) UpdateTraceOutput(output string) {
+	span := trace.SpanFromContext(context.Background())
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("trace.output", output),
+		)
+	}
+}
+
 // Helper methods
 func (p *SimpleProvider) getServiceName() string {
 	if p.config != nil && p.config.ServiceName != "" {

@@ -181,7 +181,6 @@ flowchart LR
   - Docker container support with GHCR publishing
   - Kubernetes Helm charts with OCI registry
   - Comprehensive logging and error handling
-  - Test coverage with security scanning
 - ✅ **Monitoring & Observability**:
   - Prometheus metrics integration
   - Tool invocation tracking with error rates
@@ -191,142 +190,13 @@ flowchart LR
   - Comprehensive span tracking for LLM operations and tool calls
   - Configurable metrics endpoint and logging levels
 
-## Installation
+## Configuration
 
-### From Binary Release
-
-Download the latest binary from the [GitHub releases page](https://github.com/tuannvm/slack-mcp-client/releases/latest) or install using Go:
-
-```bash
-# Install latest version using Go
-go install github.com/tuannvm/slack-mcp-client@latest
-
-# Or build from source
-git clone https://github.com/tuannvm/slack-mcp-client.git
-cd slack-mcp-client
-make build
-# Binary will be in ./bin/slack-mcp-client
-```
-
-### Running Locally with Binary
-
-After installing the binary, you can run it locally with the following steps:
-
-1. Set up environment variables:
-
-```bash
-# Using environment variables directly
-export SLACK_BOT_TOKEN="xoxb-your-bot-token"
-export SLACK_APP_TOKEN="xapp-your-app-token"
-export OPENAI_API_KEY="sk-your-openai-key"
-export OPENAI_MODEL="gpt-4o"
-export LOG_LEVEL="info"
-
-# Or create a .env file and source it
-cat > .env << EOL
-SLACK_BOT_TOKEN="xoxb-your-bot-token"
-SLACK_APP_TOKEN="xapp-your-app-token"
-OPENAI_API_KEY="sk-your-openai-key"
-OPENAI_MODEL="gpt-4o"
-LOG_LEVEL="info"
-EOL
-
-source .env
-```
-
-2. Create a unified configuration file:
-
-```bash
-# Create config.json with the new unified configuration format
-cat > config.json << EOL
-{
-  "\$schema": "https://github.com/tuannvm/slack-mcp-client/schema/config-schema.json",
-  "version": "2.0",
-  "slack": {
-    "botToken": "\${SLACK_BOT_TOKEN}",
-    "appToken": "\${SLACK_APP_TOKEN}"
-  },
-  "llm": {
-    "provider": "openai",
-    "useNativeTools": true,
-    "providers": {
-      "openai": {
-        "model": "gpt-4o",
-        "apiKey": "\${OPENAI_API_KEY}",
-        "temperature": 0.7
-      }
-    }
-  },
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "\$HOME"]
-    }
-  },
-  "monitoring": {
-    "enabled": true,
-    "metricsPort": 8080,
-    "loggingLevel": "info"
-  },
-  "observability": {
-    "enabled": true,
-    "provider": "simple-otel",
-    "endpoint": "${OTEL_EXPORTER_OTLP_ENDPOINT}",
-    "serviceName": "slack-mcp-client",
-    "serviceVersion": "1.0.0"
-  }
-}
-EOL
-```
-
-3. Run the application:
-
-```bash
-# Run with unified configuration (looks for config.json in current directory)
-slack-mcp-client --config config.json
-
-# Enable debug mode with structured logging
-slack-mcp-client --config config.json --debug
-
-# Validate configuration before running
-slack-mcp-client --config-validate --config config.json
-
-# Configure metrics port via config file or flag
-slack-mcp-client --config config.json --metrics-port 9090
-```
-
-### Migrating from Legacy Configuration
-
-If you have an existing `mcp-servers.json` file from a previous version, you can migrate to the new unified configuration format:
-
-```bash
-# Automatic migration (recommended)
-slack-mcp-client --migrate-config --config legacy-mcp-servers.json --output config.json
-
-# Manual migration: Use examples as templates
-cp examples/minimal.json config.json
-# Edit config.json with your specific settings
-
-# Validate the new configuration
-slack-mcp-client --config-validate --config config.json
-```
-
-The new configuration format provides:
-- **Single File**: All settings in one `config.json` file
-- **JSON Schema**: IDE support with autocomplete and validation
-- **Environment Variables**: Use `${VAR_NAME}` syntax for secrets
-- **Smart Defaults**: Minimal configuration required for basic usage
-- **Comprehensive Options**: All underlying package settings exposed
-
-The application will connect to Slack and start listening for messages. You can check the logs for any errors or connection issues.
-
-### RAG Setup and Usage
+### Unified Configuration Format
 
 The client includes an improved RAG (Retrieval-Augmented Generation) system that's compatible with LangChain Go and provides professional-grade performance:
 
-#### Quick Start with RAG
-
-1. **Enable RAG in your configuration:**
+#### RAG Configuration
 
 ```json
 {
@@ -365,37 +235,13 @@ The client includes an improved RAG (Retrieval-Augmented Generation) system that
 }
 ```
 
-2. **Ingest documents using CLI:**
-
-```bash
-# Ingest PDF files from a directory
-slack-mcp-client --rag-ingest ./company-docs --rag-db ./knowledge.json
-
-# Test search functionality
-slack-mcp-client --rag-search "vacation policy" --rag-db ./knowledge.json
-
-# Get database statistics
-slack-mcp-client --rag-stats --rag-db ./knowledge.json
-```
-
-3. **Use in Slack:**
-
-Once configured, the LLM can automatically search your knowledge base:
-
-**User**: "What's our vacation policy?"
-
-**AI**: "Let me search our knowledge base for vacation policy information..."
-*(Automatically searches RAG database)*
-
-**AI**: "Based on our company policy documents, you get 15 days of vacation..."
-
 #### RAG Features
 
 - **🎯 Smart Search**: Advanced relevance scoring with word frequency, filename boosting, and phrase matching
 - **🔗 LangChain Compatible**: Drop-in replacement for standard vector stores
 - **📈 Extensible**: Easy to add vector embeddings and other backends
 
-### Custom Prompts and Assistants
+## Custom Prompts and Assistants
 
 The client supports advanced prompt engineering capabilities for creating specialized AI assistants:
 
@@ -1070,45 +916,4 @@ Comprehensive documentation is available in the `docs/` directory:
 - **Formatting**: See the [Slack Formatting Guide](docs/format.md) for message formatting capabilities
 - **RAG SQLite**: See the [RAG SQLite Implementation](docs/rag-sqlite.md) for native Go implementation with modern upload UX
 - **Development**: Check the [Implementation Notes](docs/implementation.md) for technical details
-- **Testing**: Use the [Testing Guide](docs/test.md) for testing procedures and debugging
 - **Monitoring**: See the metrics configuration section above for Prometheus integration
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## CI/CD and Releases
-
-This project uses GitHub Actions for continuous integration and GoReleaser for automated releases.
-
-### Continuous Integration Checks
-
-Our CI pipeline performs the following checks on all PRs and commits to the main branch:
-
-#### Code Quality
-- **Linting**: Using golangci-lint to check for common code issues and style violations
-- **Go Module Verification**: Ensuring go.mod and go.sum are properly maintained
-- **Formatting**: Verifying code is properly formatted with gofmt
-
-#### Security
-- **Vulnerability Scanning**: Using govulncheck to check for known vulnerabilities in dependencies
-- **Dependency Scanning**: Using Trivy to scan for vulnerabilities in dependencies
-- **SBOM Generation**: Creating a Software Bill of Materials for dependency tracking
-
-#### Testing
-- **Unit Tests**: Running tests with race detection and code coverage reporting
-- **Build Verification**: Ensuring the codebase builds successfully
-
-### Release Process
-
-When changes are merged to the main branch:
-1. CI checks are run to validate code quality and security
-2. If successful, a new release is automatically created with:
-   - Semantic versioning based on commit messages
-   - Binary builds for multiple platforms
-   - Docker image publishing to GitHub Container Registry
-   - Helm chart publishing to GitHub Container Registry

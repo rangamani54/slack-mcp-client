@@ -162,6 +162,7 @@ func containsMarkdown(content string) bool {
 		regexp.MustCompile(`(?m)^[\s]*[•\-\*][\s]+\w+`),   // Bullet list
 		regexp.MustCompile(`(?m)^[\s]*\d+\.[\s]+\w+`),     // Numbered list
 		regexp.MustCompile(`<https?://[^|>]+(\|[^>]+)?>`), // Links
+		regexp.MustCompile(`(?m)^#{1,6}[\s]+.+`),          // Headers (# ## ### #### ##### ######)
 	}
 
 	for _, pattern := range markdownPatterns {

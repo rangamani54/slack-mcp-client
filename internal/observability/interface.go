@@ -2,10 +2,11 @@ package observability
 
 import (
 	"context"
+	"time"
+
 	"github.com/tuannvm/slack-mcp-client/internal/common/logging"
 	"github.com/tuannvm/slack-mcp-client/internal/config"
 	"go.opentelemetry.io/otel/trace"
-	"time"
 )
 
 type TracingProvider string
@@ -29,6 +30,10 @@ type TracingHandler interface {
 	SetOutput(span trace.Span, output string)
 	SetTokenUsage(span trace.Span, promptTokens, completionTokens, reasoningTokens, totalTokens int)
 	SetDuration(span trace.Span, duration time.Duration)
+
+	// Trace-level updates
+	UpdateTraceInput(input string)
+	UpdateTraceOutput(output string)
 
 	// Status and error handling
 	RecordError(span trace.Span, err error, level string)
@@ -72,6 +77,10 @@ func (n noOpHandler) SetTokenUsage(span trace.Span, promptTokens, completionToke
 }
 
 func (n noOpHandler) SetDuration(span trace.Span, duration time.Duration) {}
+
+func (n noOpHandler) UpdateTraceInput(input string) {}
+
+func (n noOpHandler) UpdateTraceOutput(output string) {}
 
 func (n noOpHandler) RecordError(span trace.Span, err error, level string) {}
 

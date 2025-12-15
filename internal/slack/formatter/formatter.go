@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/slack-go/slack"
 )
@@ -40,10 +41,13 @@ func DefaultOptions() FormatOptions {
 // BlockOptions contains options for Block Kit messages
 type BlockOptions struct {
 	HeaderText          string
+	HeaderEmoji         string // Optional emoji for header (e.g., "🤖", "✅", "📊")
 	Fields              []Field
 	Actions             []Action
 	FooterMrkdwn        string
+	FooterIcon          string // Optional emoji for footer (e.g., "🔗", "📎", "ℹ️")
 	DividerBeforeFooter bool
+	ShowTimestamp       bool // Add timestamp to footer
 }
 
 // Field represents a field in a section block
@@ -98,8 +102,21 @@ func FormatMessage(text string, options FormatOptions) []slack.MsgOption {
 				var slackBlock slack.Block
 				switch blockType {
 				case "section":
+					// Manually construct section to ensure mrkdwn type is preserved
 					var section slack.SectionBlock
 					if err := json.Unmarshal(blockJSON, &section); err == nil {
+						// Check if there's a text object and ensure it's mrkdwn type
+						if textObj, ok := blockMap["text"].(map[string]interface{}); ok {
+							textContent, _ := textObj["text"].(string)
+							textType, _ := textObj["type"].(string)
+
+							// Force mrkdwn type if specified, otherwise use the specified type
+							if textType == "mrkdwn" || textType == "" {
+								section.Text = slack.NewTextBlockObject(slack.MarkdownType, textContent, false, false)
+							} else {
+								section.Text = slack.NewTextBlockObject(slack.PlainTextType, textContent, false, false)
+							}
+						}
 						slackBlock = section
 					}
 				case "header":
@@ -177,6 +194,184 @@ func FormatMessage(text string, options FormatOptions) []slack.MsgOption {
 	return msgOptions
 }
 
+// findCodeBlockBoundaries finds the start and end positions of code blocks in the text
+func findCodeBlockBoundaries(text string) []struct{ start, end int } {
+	var boundaries []struct{ start, end int }
+
+	// Find all code block markers (```)
+	codeBlockRegex := regexp.MustCompile("```")
+	matches := codeBlockRegex.FindAllStringIndex(text, -1)
+
+	// Process matches in pairs (start and end of code blocks)
+	for i := 0; i < len(matches)-1; i += 2 {
+		start := matches[i][0]
+		end := matches[i+1][1] // Include the closing ```
+		boundaries = append(boundaries, struct{ start, end int }{start, end})
+	}
+
+	return boundaries
+}
+
+// findSafeBreakPoint finds a safe break point (legacy function for compatibility)
+func findSafeBreakPoint(text string, maxChunkSize int) int {
+	if len(text) <= maxChunkSize {
+		return len(text)
+	}
+
+	// Look for the last newline or space
+	chunk := text[:maxChunkSize]
+	lastNewline := strings.LastIndex(chunk, "\n")
+	lastSpace := strings.LastIndex(chunk, " ")
+
+	if lastNewline > int(float64(maxChunkSize)*0.8) {
+		return lastNewline + 1
+	}
+	if lastSpace > int(float64(maxChunkSize)*0.8) {
+		return lastSpace + 1
+	}
+
+	return maxChunkSize
+}
+
+// splitTextPreservingCodeBlocks splits text into chunks while ensuring code blocks are not split
+func splitTextPreservingCodeBlocks(text string, maxChunkSize int) []string {
+	if len(text) <= maxChunkSize {
+		return []string{text}
+	}
+
+	var chunks []string
+	boundaries := findCodeBlockBoundaries(text)
+
+	// If no code blocks, use the original logic
+	if len(boundaries) == 0 {
+		return splitTextSimple(text, maxChunkSize)
+	}
+
+	// Process text, treating code blocks as atomic units
+	pos := 0
+	currentChunk := ""
+
+	for pos < len(text) {
+		// Check if we're at the start of a code block
+		isInCodeBlock := false
+		var currentBoundary struct{ start, end int }
+
+		for _, boundary := range boundaries {
+			if pos >= boundary.start && pos < boundary.end {
+				isInCodeBlock = true
+				currentBoundary = boundary
+				break
+			}
+		}
+
+		if isInCodeBlock {
+			// Add the entire code block
+			codeBlock := text[currentBoundary.start:currentBoundary.end]
+
+			// Check if adding this code block would exceed the chunk size
+			if len(currentChunk)+len(codeBlock) > maxChunkSize && len(currentChunk) > 0 {
+				// Start a new chunk
+				chunks = append(chunks, currentChunk)
+				currentChunk = codeBlock
+			} else {
+				currentChunk += codeBlock
+			}
+
+			pos = currentBoundary.end
+		} else {
+			// Find the next code block or end of text
+			nextBoundaryStart := len(text)
+			for _, boundary := range boundaries {
+				if boundary.start > pos && boundary.start < nextBoundaryStart {
+					nextBoundaryStart = boundary.start
+				}
+			}
+
+			// Take as much text as possible up to the next code block or max chunk size
+			availableSpace := maxChunkSize - len(currentChunk)
+			endPos := pos + availableSpace
+
+			if endPos >= nextBoundaryStart {
+				// We can include up to the next code block
+				segment := text[pos:nextBoundaryStart]
+				currentChunk += segment
+				pos = nextBoundaryStart
+			} else {
+				// Find a safe break point in the available space
+				segment := text[pos:endPos]
+				breakPoint := findSafeBreakPointInSegment(segment, availableSpace)
+
+				if breakPoint > 0 {
+					currentChunk += text[pos : pos+breakPoint]
+					chunks = append(chunks, currentChunk)
+					currentChunk = ""
+					pos += breakPoint
+				} else {
+					// No safe break point, take the whole segment
+					currentChunk += segment
+					pos = endPos
+
+					// If we filled the chunk, start a new one
+					if len(currentChunk) >= maxChunkSize {
+						chunks = append(chunks, currentChunk)
+						currentChunk = ""
+					}
+				}
+			}
+		}
+	}
+
+	// Add the last chunk if not empty
+	if len(currentChunk) > 0 {
+		chunks = append(chunks, currentChunk)
+	}
+
+	return chunks
+}
+
+// splitTextSimple splits text using the original simple logic
+func splitTextSimple(text string, maxChunkSize int) []string {
+	var chunks []string
+	remaining := text
+
+	for len(remaining) > 0 {
+		chunkSize := maxChunkSize
+		if len(remaining) < chunkSize {
+			chunkSize = len(remaining)
+		} else {
+			// Find a safe break point
+			chunkSize = findSafeBreakPoint(remaining, maxChunkSize)
+		}
+
+		chunk := remaining[:chunkSize]
+		chunks = append(chunks, chunk)
+		remaining = remaining[chunkSize:]
+	}
+
+	return chunks
+}
+
+// findSafeBreakPointInSegment finds a safe break point within a segment
+func findSafeBreakPointInSegment(segment string, maxLength int) int {
+	if len(segment) <= maxLength {
+		return len(segment)
+	}
+
+	// Look for the last newline or space
+	lastNewline := strings.LastIndex(segment[:maxLength], "\n")
+	lastSpace := strings.LastIndex(segment[:maxLength], " ")
+
+	if lastNewline > int(float64(maxLength)*0.8) {
+		return lastNewline + 1
+	}
+	if lastSpace > int(float64(maxLength)*0.8) {
+		return lastSpace + 1
+	}
+
+	// No good break point found
+	return 0
+}
+
 // CreateBlockMessage creates a Block Kit message with the given options
 func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 	blocks := []map[string]interface{}{}
@@ -185,6 +380,12 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 	if blockOptions.HeaderText != "" {
 		// Truncate header text if too long (Slack has a 150 char limit for plain_text)
 		headerText := blockOptions.HeaderText
+
+		// Add emoji prefix if provided
+		if blockOptions.HeaderEmoji != "" {
+			headerText = blockOptions.HeaderEmoji + " " + headerText
+		}
+
 		if len(headerText) > 150 {
 			headerText = headerText[:147] + "..."
 		}
@@ -192,8 +393,9 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 		blocks = append(blocks, map[string]interface{}{
 			"type": "header",
 			"text": map[string]interface{}{
-				"type": "plain_text",
-				"text": headerText,
+				"type":  "plain_text",
+				"text":  headerText,
+				"emoji": true, // Enable emoji rendering
 			},
 		})
 	}
@@ -231,19 +433,33 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 
 	// Add text section if provided
 	if text != "" {
-		// Truncate text if too long (Slack has a 3000 char limit for text blocks)
-		sectionText := text
-		if len(sectionText) > 3000 {
-			sectionText = sectionText[:2997] + "..."
-		}
+		// Slack has a 3000 char limit for text blocks in sections
+		// Split long text into multiple section blocks while preserving code blocks
+		const maxChunkSize = 2900 // Leave room for markdown formatting
 
-		blocks = append(blocks, map[string]interface{}{
-			"type": "section",
-			"text": map[string]interface{}{
-				"type": "mrkdwn",
-				"text": sectionText,
-			},
-		})
+		if len(text) <= maxChunkSize {
+			// Text fits in a single block
+			blocks = append(blocks, map[string]interface{}{
+				"type": "section",
+				"text": map[string]interface{}{
+					"type": "mrkdwn",
+					"text": text,
+				},
+			})
+		} else {
+			// Split text into multiple blocks while preserving code blocks
+			chunks := splitTextPreservingCodeBlocks(text, maxChunkSize)
+
+			for _, chunk := range chunks {
+				blocks = append(blocks, map[string]interface{}{
+					"type": "section",
+					"text": map[string]interface{}{
+						"type": "mrkdwn",
+						"text": chunk,
+					},
+				})
+			}
+		}
 	}
 
 	// Optionally add a divider before the footer
@@ -255,12 +471,25 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 
 	// Add footer if provided
 	if blockOptions.FooterMrkdwn != "" {
+		footerText := blockOptions.FooterMrkdwn
+
+		// Add emoji prefix if provided
+		if blockOptions.FooterIcon != "" {
+			footerText = blockOptions.FooterIcon + " " + footerText
+		}
+
+		// Add timestamp if requested
+		if blockOptions.ShowTimestamp {
+			timestamp := time.Now().Format("Jan 2, 2006 3:04 PM MST")
+			footerText = footerText + " • " + timestamp
+		}
+
 		blocks = append(blocks, map[string]interface{}{
 			"type": "context",
 			"elements": []map[string]interface{}{
 				{
 					"type": "mrkdwn",
-					"text": blockOptions.FooterMrkdwn,
+					"text": footerText,
 				},
 			},
 		})
@@ -317,8 +546,8 @@ func CreateBlockMessage(text string, blockOptions BlockOptions) string {
 
 // FormatMarkdown formats text using Slack's mrkdwn syntax
 func FormatMarkdown(text string) string {
-	// Convert quoted strings to code blocks for better visualization
-	text = ConvertQuotedStringsToCode(text)
+	// NOTE: Removed ConvertQuotedStringsToCode as it was too aggressive
+	// and created visual noise with literal backticks in Block Kit messages
 
 	// Replace standard Markdown bold (**text**) with Slack bold (*text*)
 	boldPattern := regexp.MustCompile(`\*\*([^*]+)\*\*`)
@@ -327,6 +556,29 @@ func FormatMarkdown(text string) string {
 	// Replace standard Markdown block quotes (>) with Slack block quotes (>)
 	quotePattern := regexp.MustCompile(`(?m)^\s*>\s+(.*)$`)
 	text = quotePattern.ReplaceAllString(text, "> $1")
+
+	// Convert Markdown headers (# ## ###) to Slack bold text
+	headerPattern := regexp.MustCompile(`(?m)^(#{1,6})\s+(.+)$`)
+	text = headerPattern.ReplaceAllString(text, "*$2*")
+
+	// Convert Markdown links [text](url) to Slack format <url|text>
+	markdownLinkPattern := regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	text = markdownLinkPattern.ReplaceAllString(text, "<$2|$1>")
+
+	// Convert bare HTTP/HTTPS URLs to Slack clickable links <url>
+	// But avoid converting URLs that are already in Slack format
+	bareUrlPattern := regexp.MustCompile(`(?:^|[^<])(https?://[^\s<>]+)(?:[^>]|$)`)
+	text = bareUrlPattern.ReplaceAllStringFunc(text, func(match string) string {
+		// Extract the URL from the match
+		urlMatch := regexp.MustCompile(`https?://[^\s<>]+`).FindString(match)
+		if urlMatch != "" {
+			// Preserve any characters before/after the URL
+			prefix := match[:strings.Index(match, urlMatch)]
+			suffix := match[strings.Index(match, urlMatch)+len(urlMatch):]
+			return prefix + "<" + urlMatch + ">" + suffix
+		}
+		return match
+	})
 
 	return text
 }
@@ -444,4 +696,58 @@ func EmailLink(email, text string) string {
 		return fmt.Sprintf("<mailto:%s>", email)
 	}
 	return fmt.Sprintf("<mailto:%s|%s>", email, text)
+}
+
+// CreateResponseTemplate creates a beautifully formatted response with optional header
+func CreateResponseTemplate(content string, options BlockOptions) string {
+	// Apply markdown formatting first
+	formattedContent := FormatMarkdown(content)
+
+	// Create the block message with the options
+	return CreateBlockMessage(formattedContent, options)
+}
+
+// CreateSuccessResponse creates a success-themed response
+func CreateSuccessResponse(content, traceURL string) string {
+	footer := ""
+	if traceURL != "" {
+		footer = Link(traceURL, "View Trace")
+	}
+
+	return CreateResponseTemplate(content, BlockOptions{
+		FooterMrkdwn:        footer,
+		FooterIcon:          "✅",
+		DividerBeforeFooter: true,
+		ShowTimestamp:       true,
+	})
+}
+
+// CreateErrorResponse creates an error-themed response
+func CreateErrorResponse(content, traceURL string) string {
+	footer := ""
+	if traceURL != "" {
+		footer = Link(traceURL, "View Trace")
+	}
+
+	return CreateResponseTemplate(content, BlockOptions{
+		FooterMrkdwn:        footer,
+		FooterIcon:          "❌",
+		DividerBeforeFooter: true,
+		ShowTimestamp:       true,
+	})
+}
+
+// CreateInfoResponse creates an info-themed response
+func CreateInfoResponse(content, traceURL string) string {
+	footer := ""
+	if traceURL != "" {
+		footer = Link(traceURL, "View Trace")
+	}
+
+	return CreateResponseTemplate(content, BlockOptions{
+		FooterMrkdwn:        footer,
+		FooterIcon:          "ℹ️",
+		DividerBeforeFooter: true,
+		ShowTimestamp:       true,
+	})
 }

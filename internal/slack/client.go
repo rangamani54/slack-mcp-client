@@ -540,7 +540,9 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 
 		if err != nil {
 			c.logger.ErrorKV("Error from LLM provider", "provider", c.cfg.LLM.Provider, "error", err)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the LLM provider ('%s'): %v", c.cfg.LLM.Provider, err))
+			errorMsg := fmt.Sprintf("Sorry, I encountered an error with the LLM provider ('%s'): %v", c.cfg.LLM.Provider, err)
+			// Send simple error message without footer/trace
+			c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
 			c.tracingHandler.RecordError(llmSpan, err, "ERROR")
 			llmSpan.End()
 			return
@@ -637,7 +639,7 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 			"history_mode":    historyMode, // "delta" or "snapshot"
 			"since_ts":        since,       // for observability only; router trusts its own state
 			"trace_id":        traceID,
-			"span_id":        spanID,
+			"span_id":         spanID,
 			"session_id":      sessionID,
 			"user_profile": map[string]interface{}{
 				"user_id":   profile.userId,
@@ -650,7 +652,20 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		jsonData, err := json.Marshal(reqMap)
 		if err != nil {
 			c.logger.ErrorKV("Failed to marshal agent request", "error", err)
-			c.userFrontend.SendMessage(channelID, threadTS, "Sorry, I couldn't prepare the agent request.")
+			errorContent := "Sorry, I couldn't prepare your request. This is a system error."
+
+			if c.cfg.Slack.TemplateResponse {
+				errorMsg := formatter.CreateBlockMessage(errorContent, formatter.BlockOptions{
+					FooterMrkdwn:        "⚠️ Please report to DevOps Platform team",
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent+"\n\n⚠️ Please report to DevOps Platform team")
+			}
+
 			agentSpan.End()
 			return
 		}
@@ -658,7 +673,20 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		AgentResponse, err := http.Post(c.cfg.LLM.ExternalAgent.Url, "application/json", strings.NewReader(string(jsonData)))
 		if err != nil {
 			c.logger.ErrorKV("Error to send external agent request", "external agent", c.cfg.LLM.ExternalAgent.Url, "error", err)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the external agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, err))
+			errorContent := "Sorry, I couldn't reach the router agent. The service might be temporarily unavailable."
+
+			if c.cfg.Slack.TemplateResponse {
+				errorMsg := formatter.CreateBlockMessage(errorContent, formatter.BlockOptions{
+					FooterMrkdwn:        "⚠️ Please report to DevOps Platform team if this issue persists",
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent+"\n\n⚠️ Please report to DevOps Platform team if this issue persists")
+			}
+
 			c.tracingHandler.RecordError(agentSpan, err, "ERROR")
 			agentSpan.End()
 			return
@@ -670,13 +698,39 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		body, err := io.ReadAll(AgentResponse.Body)
 		if err != nil {
 			c.logger.ErrorKV("Failed to read agent response body", "error", err)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I couldn't read the response from the agent: %v", err))
+			errorContent := "Sorry, I couldn't read the response from the router agent. This is a system error."
+
+			if c.cfg.Slack.TemplateResponse {
+				errorMsg := formatter.CreateBlockMessage(errorContent, formatter.BlockOptions{
+					FooterMrkdwn:        "⚠️ Please report to DevOps Platform team",
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent+"\n\n⚠️ Please report to DevOps Platform team")
+			}
+
 			agentSpan.End()
 			return
 		}
 		if AgentResponse.StatusCode != http.StatusOK {
 			c.logger.ErrorKV("Error from External Agent", c.cfg.LLM.ExternalAgent.Url, "status", AgentResponse.Status)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the External Agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, err))
+			errorContent := fmt.Sprintf("Sorry, the router agent returned an error (HTTP %s). This is likely a temporary issue.", AgentResponse.Status)
+
+			if c.cfg.Slack.TemplateResponse {
+				errorMsg := formatter.CreateBlockMessage(errorContent, formatter.BlockOptions{
+					FooterMrkdwn:        "⚠️ Please report to DevOps Platform team if this issue persists",
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent+"\n\n⚠️ Please report to DevOps Platform team if this issue persists")
+			}
+
 			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("External Agent returned non-200 status: %s-%s", AgentResponse.Status, string(body)), "ERROR")
 			agentSpan.End()
 			return
@@ -686,37 +740,59 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		err = json.Unmarshal(body, &llmResponse)
 		if err != nil {
 			c.logger.ErrorKV("Failed to unmarshal agent response", "error", err)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I couldn't process the response from the agent: %v", err))
+			errorContent := "Sorry, I received a malformed response from the router agent. This is likely a system error."
+
+			if c.cfg.Slack.TemplateResponse {
+				errorMsg := formatter.CreateBlockMessage(errorContent, formatter.BlockOptions{
+					FooterMrkdwn:        "⚠️ Please report to DevOps Platform team - include the timestamp",
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent+"\n\n⚠️ Please report to DevOps Platform team - include the timestamp")
+			}
+
 			c.tracingHandler.RecordError(agentSpan, err, "ERROR")
 			agentSpan.End()
 			return
 		}
 		if !llmResponse.Success {
 			c.logger.ErrorKV("Error Response from External Agent", "External Agent", c.cfg.LLM.ExternalAgent.Url, "error", llmResponse.Error)
-			c.userFrontend.SendMessage(channelID, threadTS, fmt.Sprintf("Sorry, I encountered an error with the external agent ('%s'): %v", c.cfg.LLM.ExternalAgent.Url, llmResponse.Error))
+
+			// Use the content from router (which contains user-friendly error message)
+			// instead of the raw error field which is for debugging
+			errorContent := llmResponse.Content
+			if errorContent == "" {
+				// Fallback if content is empty
+				errorContent = fmt.Sprintf("An error occurred: %v", llmResponse.Error)
+			}
+
+			// Format error with appropriate styling
+			if c.cfg.Slack.TemplateResponse {
+				footer := "⚠️ Please report to DevOps Platform team if this issue persists"
+				if llmResponse.TraceURL != "" {
+					footer = formatter.Link(strings.TrimSpace(llmResponse.TraceURL), "View Trace") + " • " + footer
+				}
+
+				errorMsg := formatter.CreateBlockMessage(formatter.FormatMarkdown(errorContent), formatter.BlockOptions{
+					FooterMrkdwn:        footer,
+					FooterIcon:          "❌",
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, errorMsg)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, errorContent)
+			}
+
 			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("External agent returned error: %s", llmResponse.Error), "ERROR")
 			agentSpan.End()
 			return
 		}
 		c.logger.InfoKV("Received response from External Agent", c.cfg.LLM.ExternalAgent.Url, "length", len(llmResponse.Content))
 		final := llmResponse.Content
-		if c.cfg.Slack.TemplateResponse && llmResponse.TraceURL != "" {
-			c.logger.InfoKV("Templating response", "channel_id", channelID, "thread_ts", threadTS)
-			footer := "Checkout trace: " + formatter.Link(strings.TrimSpace(llmResponse.TraceURL), "open")
-			jsonData := formatter.CreateBlockMessage(formatter.FormatMarkdown(final), formatter.BlockOptions{
-				FooterMrkdwn:        footer,
-				DividerBeforeFooter: true,
-			})
-			c.userFrontend.SendMessage(channelID, threadTS, jsonData)
-		} else {
-			c.userFrontend.SendMessage(channelID, threadTS, final)
-		}
-		// Set Output
-		c.tracingHandler.SetOutput(agentSpan, final)
-		c.tracingHandler.SetOutput(span, final)
-
-		c.logger.DebugKV("LLM agent call succeeded", "response", final)
-		c.logger.DebugKV("LLM agent call succeeded", "llm_response", llmResponse)
 
 		if llmResponse.LastIngestedTS != "" {
 			key := historyKey(channelID, threadTS)
@@ -728,10 +804,31 @@ func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timest
 		if llmResponse.Content == "" {
 			c.userFrontend.SendMessage(channelID, threadTS, "(LLM returned an empty response)")
 			c.tracingHandler.RecordError(agentSpan, fmt.Errorf("LLM returned an empty response"), "ERROR")
-
 		} else {
+			// Send message with template or plain format
+			if c.cfg.Slack.TemplateResponse && llmResponse.TraceURL != "" {
+				c.logger.InfoKV("Templating response", "channel_id", channelID, "thread_ts", threadTS)
+				footer := formatter.Link(strings.TrimSpace(llmResponse.TraceURL), "View Trace")
+				jsonData := formatter.CreateBlockMessage(formatter.FormatMarkdown(final), formatter.BlockOptions{
+					FooterMrkdwn:        footer,
+					FooterIcon:          "🔍", // Magnifying glass for trace link
+					DividerBeforeFooter: true,
+					ShowTimestamp:       true,
+				})
+				c.userFrontend.SendMessage(channelID, threadTS, jsonData)
+			} else {
+				c.userFrontend.SendMessage(channelID, threadTS, final)
+			}
 			c.tracingHandler.RecordSuccess(agentSpan, "LLM agent call succeeded")
 		}
+
+		// Set Output
+		c.tracingHandler.SetOutput(agentSpan, final)
+		c.tracingHandler.UpdateTraceOutput(final)
+
+		c.logger.DebugKV("LLM agent call succeeded", "response", final)
+		c.logger.DebugKV("LLM agent call succeeded", "llm_response", llmResponse)
+
 		agentSpan.End()
 	} else {
 		// Agent path with enhanced tracing

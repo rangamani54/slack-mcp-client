@@ -117,7 +117,7 @@ func (p *LangfuseProvider) StartTrace(ctx context.Context, name string, input st
 		attribute.String("langfuse.trace.input", input),
 		attribute.String("langfuse.release", p.getServiceVersion()),
 		attribute.String("langfuse.environment", p.getEnvironment()),
-		attribute.Bool("langfuse.trace.public", false),
+		attribute.Bool("langfuse.trace.public", true),
 	)
 
 	// Add metadata with Langfuse prefix for queryability
@@ -289,6 +289,35 @@ func (p *LangfuseProvider) GetTraceID(ctx context.Context) string {
 	return sc.TraceID().String()
 }
 
+func (p *LangfuseProvider) UpdateTraceInput(input string) {
+	if p.tracer == nil {
+		return
+	}
+	// Use Langfuse client to update current trace
+	// This requires access to the Langfuse client, but we don't have it in this provider
+	// For now, we'll use the OpenTelemetry approach
+	span := OtelTrace.SpanFromContext(context.Background())
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("langfuse.trace.input", input),
+		)
+	}
+}
+
+func (p *LangfuseProvider) UpdateTraceOutput(output string) {
+	if p.tracer == nil {
+		return
+	}
+	// Use Langfuse client to update current trace
+	span := OtelTrace.SpanFromContext(context.Background())
+	if span != nil {
+		span.SetAttributes(
+			attribute.String("langfuse.trace.output", output),
+		)
+	}
+}
+
+// Get Span id from context
 func (p *LangfuseProvider) GetSpanID(ctx context.Context) string {
 	span := OtelTrace.SpanFromContext(ctx)
 	if span == nil {
