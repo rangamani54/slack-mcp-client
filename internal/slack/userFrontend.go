@@ -167,10 +167,6 @@ func (slackClient *SlackClient) SendMessage(channelID, threadTS, text string) {
 
 	// Delete "typing" indicator messages if any
 	// This is a simplistic approach - more sophisticated approaches might track message IDs
-	// history, err := slackClient.GetConversationHistory(&slack.GetConversationHistoryParameters{
-	// 	ChannelID: channelID,
-	// 	Limit:     10,
-	// })
 	history, err := slackClient.GetThreadReplies(channelID, threadTS)
 	if err == nil && history != nil {
 		for _, msg := range history {

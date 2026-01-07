@@ -2,7 +2,7 @@
 
 **A production-ready bridge between Slack and AI models with full MCP compatibility.**
 
-This client enables AI models (OpenAI, Anthropic, Ollama) to interact with real tools and systems through Slack conversations. Built on the industry-standard Model Context Protocol (MCP), it provides secure access to filesystems, databases, Kubernetes clusters, Git repositories, and custom tools.
+This client enables AI models (OpenAI GPT-4.1, Anthropic Claude 4.5, Ollama local models) to interact with real tools and systems through Slack conversations. Built on the industry-standard Model Context Protocol (MCP), it provides secure access to filesystems, databases, Kubernetes clusters, Git repositories, and custom tools.
 
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/tuannvm/slack-mcp-client/build.yml?branch=main&label=CI%2FCD&logo=github)](https://github.com/tuannvm/slack-mcp-client/actions/workflows/build.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/tuannvm/slack-mcp-client?logo=go)](https://github.com/tuannvm/slack-mcp-client/blob/main/go.mod)
@@ -13,10 +13,14 @@ This client enables AI models (OpenAI, Anthropic, Ollama) to interact with real 
 
 > **Compatible with MCP Specification 2025-06-18** - Compliant with the latest Model Context Protocol standards
 
+## Recent Updates
+
+**Oct 2025**: langchaingo v0.1.14 with streaming fixes, enhanced agent parsing, and API key sanitization.
+
 ## Key Features
 
 - **Universal MCP Compatibility** - Supports all transport methods (HTTP, SSE, stdio)
-- **Multi-Provider LLM Support** - OpenAI GPT-4o, Anthropic Claude, Ollama local models
+- **Multi-Provider LLM Support** - OpenAI GPT-4.1/4o, Anthropic Claude 4.5, Ollama (Llama 3.3, Qwen, Mistral, DeepSeek)
 - **Agent Mode** - Multi-step reasoning with LangChain for complex workflows
 - **RAG Integration** - Knowledge base with semantic search capabilities
 - **Thread-Aware Context** - Maintains separate conversation history per Slack thread
@@ -71,27 +75,27 @@ flowchart LR
         Tracing[🔍 OpenTelemetry Tracing<br/>Langfuse & OTLP]
         Logging[📝 Structured Logging<br/>Debug & Analytics]
     end
-    
+
     subgraph Core[Features]
         Slack --> Bridge[🌉 LLM-MCP Bridge<br/>Orchestration Layer]
-        
+
         subgraph LLM[🤖 AI Processing]
             Bridge --> LLMRegistry[LLM Provider Registry]
             LLMRegistry --> OpenAI[OpenAI<br/>GPT-4o]
             LLMRegistry --> Anthropic[Anthropic<br/>Claude]
             LLMRegistry --> Ollama[Ollama<br/>Local Models]
-            
+
             Bridge --> Agent{🎯 Agent Mode?}
             Agent -->|Yes| LangChain[🔄 LangChain Agent<br/>Multi-step Reasoning]
             Agent -->|No| Standard[⚡ Standard Mode<br/>Single Response]
         end
-        
+
         subgraph Knowledge[📚 Knowledge & Memory]
             Bridge --> RAG[🧠 RAG System]
             RAG --> SimpleRAG[📄 JSON Store<br/>Simple Documents]
             RAG --> VectorRAG[🔍 OpenAI Vector Store<br/>Semantic Search]
         end
-        
+
         subgraph Tools[🛠️ MCP Mode]
             Bridge --> MCPManager[MCP Client]
             MCPManager --> FileSystem[📁 Filesystem MCP Server<br/>Read/Write Files]
@@ -99,19 +103,19 @@ flowchart LR
             MCPManager --> Kubernetes[☸️ Kubernetes MCP Server<br/>Cluster Management]
         end
     end
-    
-    
+
+
     Config -.-> Core
     Core -.-> Monitoring
     Core -.-> Tracing
     Core -.-> Logging
-    
+
     style Core fill:#F8F9FA,stroke:#6C757D,stroke-width:3px
     style LLM fill:#E3F2FD,stroke:#1976D2,stroke-width:2px
     style Knowledge fill:#E8F5E8,stroke:#388E3C,stroke-width:2px
     style Tools fill:#FFF3E0,stroke:#F57C00,stroke-width:2px
     style Infrastructure fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px
-    
+
     style User fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff
     style Slack fill:#4A90E2,stroke:#1565C0,stroke-width:2px,color:#fff
     style Bridge fill:#FF9800,stroke:#E65100,stroke-width:2px,color:#fff
@@ -130,7 +134,7 @@ flowchart LR
    - OpenAI Vector Store for semantic search and enterprise-grade RAG
 4. **Tool Ecosystem** connects to diverse external systems:
    - Filesystem operations for file management
-   - Git integration for repository interactions  
+   - Git integration for repository interactions
    - Kubernetes cluster management and monitoring
    - Custom tools via HTTP, SSE, or stdio protocols
 5. **Infrastructure** ensures production-ready deployment:
@@ -141,11 +145,11 @@ flowchart LR
 
 ## Features
 
-- ✅ **Multi-Mode MCP Client**: 
+- ✅ **Multi-Mode MCP Client**:
   - Server-Sent Events (SSE) for real-time communication with automatic retry
   - HTTP transport for JSON-RPC
   - stdio for local development and testing
-- ✅ **Slack Integration**: 
+- ✅ **Slack Integration**:
   - Uses Socket Mode for secure, firewall-friendly communication
   - Works with both channels and direct messages
   - Rich message formatting with Markdown and Block Kit
@@ -153,18 +157,18 @@ flowchart LR
   - User context caching for personalized interactions
   - Customizable bot behavior and message history
 - ✅ **Multi-Provider LLM Support**:
-  - OpenAI (GPT-4, GPT-4o, etc.)
-  - Anthropic (Claude 3.5 Sonnet, etc.) 
-  - Ollama (Local LLMs like Llama, Mistral, etc.)
-  - Native tool calling and agent mode support
-  - LangChain gateway for unified API
+  - OpenAI (GPT-4.1, GPT-4o, o3-pro)
+  - Anthropic (Claude Sonnet 4.5, Opus 4.1)
+  - Ollama (Llama 3.3, Qwen2.5, Mistral, DeepSeek)
+  - Native tool calling and unified LangChain gateway
 - ✅ **Agent Mode**:
-  - Autonomous AI agents powered by LangChain
-  - Multi-step reasoning and tool orchestration
+  - Autonomous AI agents powered by LangChain (langchaingo v0.1.14)
+  - Enhanced multi-step reasoning and tool orchestration
+  - Improved parsing for complex multi-line tool calls
   - Configurable agent iterations and behavior
-  - Streaming responses with real-time updates
+  - Reliable streaming responses with memory leak fixes
   - Advanced prompt engineering capabilities
-- ✅ **RAG (Retrieval-Augmented Generation)**: 
+- ✅ **RAG (Retrieval-Augmented Generation)**:
   - Multiple providers: Simple JSON storage, OpenAI Vector Store
   - Reusable vector stores with `vectorStoreId` support
   - Configurable search parameters and similarity metrics
@@ -192,7 +196,134 @@ flowchart LR
 
 ## Configuration
 
-### Unified Configuration Format
+### From Binary Release
+
+Download the latest binary from the [GitHub releases page](https://github.com/tuannvm/slack-mcp-client/releases/latest) or install using Go:
+
+```bash
+# Install latest version using Go
+go install github.com/tuannvm/slack-mcp-client@latest
+
+# Or build from source
+git clone https://github.com/tuannvm/slack-mcp-client.git
+cd slack-mcp-client
+make build
+# Binary will be in ./bin/slack-mcp-client
+```
+
+### Running Locally with Binary
+
+After installing the binary, you can run it locally with the following steps:
+
+1. Set up environment variables:
+
+```bash
+# Using environment variables directly
+export SLACK_BOT_TOKEN="xoxb-your-bot-token"
+export SLACK_APP_TOKEN="xapp-your-app-token"
+export OPENAI_API_KEY="sk-your-openai-key"
+export OPENAI_MODEL="gpt-4.1"  # or gpt-4o, o3-pro
+export LOG_LEVEL="info"
+
+# Or create a .env file and source it
+cat > .env << EOL
+SLACK_BOT_TOKEN="xoxb-your-bot-token"
+SLACK_APP_TOKEN="xapp-your-app-token"
+OPENAI_API_KEY="sk-your-openai-key"
+OPENAI_MODEL="gpt-4o"
+LOG_LEVEL="info"
+EOL
+
+source .env
+```
+
+2. Create a unified configuration file:
+
+```bash
+# Create config.json with the new unified configuration format
+cat > config.json << EOL
+{
+  "\$schema": "https://github.com/tuannvm/slack-mcp-client/schema/config-schema.json",
+  "version": "2.0",
+  "slack": {
+    "botToken": "\${SLACK_BOT_TOKEN}",
+    "appToken": "\${SLACK_APP_TOKEN}"
+  },
+  "llm": {
+    "provider": "openai",
+    "useNativeTools": true,
+    "providers": {
+      "openai": {
+        "model": "gpt-4o",
+        "apiKey": "\${OPENAI_API_KEY}",
+        "temperature": 0.7
+      }
+    }
+  },
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "\$HOME"]
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "metricsPort": 8080,
+    "loggingLevel": "info"
+  },
+  "observability": {
+    "enabled": true,
+    "provider": "simple-otel",
+    "endpoint": "${OTEL_EXPORTER_OTLP_ENDPOINT}",
+    "serviceName": "slack-mcp-client",
+    "serviceVersion": "1.0.0"
+  }
+}
+EOL
+```
+
+3. Run the application:
+
+```bash
+# Run with unified configuration (looks for config.json in current directory)
+slack-mcp-client --config config.json
+
+# Enable debug mode with structured logging
+slack-mcp-client --config config.json --debug
+
+# Validate configuration before running
+slack-mcp-client --config-validate --config config.json
+
+# Configure metrics port via config file or flag
+slack-mcp-client --config config.json --metrics-port 9090
+```
+
+### Migrating from Legacy Configuration
+
+If you have an existing `mcp-servers.json` file from a previous version, you can migrate to the new unified configuration format:
+
+```bash
+# Automatic migration (recommended)
+slack-mcp-client --migrate-config --config legacy-mcp-servers.json --output config.json
+
+# Manual migration: Use examples as templates
+cp examples/minimal.json config.json
+# Edit config.json with your specific settings
+
+# Validate the new configuration
+slack-mcp-client --config-validate --config config.json
+```
+
+The new configuration format provides:
+- **Single File**: All settings in one `config.json` file
+- **JSON Schema**: IDE support with autocomplete and validation
+- **Environment Variables**: Use `${VAR_NAME}` syntax for secrets
+- **Smart Defaults**: Minimal configuration required for basic usage
+- **Comprehensive Options**: All underlying package settings exposed
+
+The application will connect to Slack and start listening for messages. You can check the logs for any errors or connection issues.
+
+### RAG Setup and Usage
 
 The client includes an improved RAG (Retrieval-Augmented Generation) system that's compatible with LangChain Go and provides professional-grade performance:
 
@@ -256,7 +387,7 @@ You are SalesGPT, a helpful sales assistant specializing in B2B software sales.
 
 Your expertise includes:
 - Lead qualification and discovery
-- Solution positioning and value propositions  
+- Solution positioning and value propositions
 - Objection handling and negotiation
 - CRM best practices and sales processes
 
@@ -291,7 +422,7 @@ Define prompts in your configuration:
     "customPrompt": "You are a helpful DevOps assistant specializing in Kubernetes and cloud infrastructure.",
     "providers": {
       "openai": {
-        "model": "gpt-4o",
+        "model": "gpt-4.1",
         "apiKey": "${OPENAI_API_KEY}",
         "temperature": 0.7
       }
@@ -345,7 +476,7 @@ Enable Agent Mode in your configuration file:
     "maxAgentIterations": 20,
     "providers": {
       "openai": {
-        "model": "gpt-4o",
+        "model": "gpt-4.1",
         "apiKey": "${OPENAI_API_KEY}",
         "temperature": 0.7
       }
@@ -600,6 +731,9 @@ You can easily extend this setup to include additional MCP servers in the same n
    - `im:write`
    - `users:read`
    - `users.profile:read`
+   - `channels:history`
+   - `groups:history`
+   - `mpim:history`
 5. Enable Event Subscriptions and subscribe to:
    - `app_mention`
    - `message.im`
@@ -634,17 +768,17 @@ LLM providers can be configured via environment variables or command-line flags:
 ```bash
 # Set OpenAI as the provider (default)
 export LLM_PROVIDER="openai"
-export OPENAI_MODEL="gpt-4o"
+export OPENAI_MODEL="gpt-4.1"  # or gpt-4o, o3-pro
 
 # Use Anthropic
 export LLM_PROVIDER="anthropic"
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
-export ANTHROPIC_MODEL="claude-3-5-sonnet-20241022"
+export ANTHROPIC_MODEL="claude-sonnet-4.5"  # or claude-opus-4.1
 
 # Or use Ollama
 export LLM_PROVIDER="ollama"
 export LANGCHAIN_OLLAMA_URL="http://localhost:11434"
-export LANGCHAIN_OLLAMA_MODEL="llama3"
+export LANGCHAIN_OLLAMA_MODEL="llama3.3"  # or qwen2.5-coder, mistral-small-3, deepseek-r1
 ```
 
 ### Switching Between Providers
@@ -675,13 +809,13 @@ Configure LLM providers and Slack integration using environment variables:
 | SLACK_BOT_TOKEN       | Bot token for Slack API                      | (required) |
 | SLACK_APP_TOKEN       | App-level token for Socket Mode              | (required) |
 | OPENAI_API_KEY        | API key for OpenAI authentication            | (required) |
-| OPENAI_MODEL          | OpenAI model to use                          | gpt-4o     |
+| OPENAI_MODEL          | OpenAI model to use                          | gpt-4.1    |
 | ANTHROPIC_API_KEY     | API key for Anthropic authentication         | (required for Anthropic) |
-| ANTHROPIC_MODEL       | Anthropic model to use                       | claude-3-5-sonnet-20241022 |
+| ANTHROPIC_MODEL       | Anthropic model to use                       | claude-sonnet-4.5 |
 | LOG_LEVEL             | Logging level (debug, info, warn, error)     | info       |
 | LLM_PROVIDER          | LLM provider to use (openai, anthropic, ollama) | openai     |
 | LANGCHAIN_OLLAMA_URL  | URL for Ollama when using LangChain          | http://localhost:11434 |
-| LANGCHAIN_OLLAMA_MODEL| Model name for Ollama when using LangChain   | llama3     |
+| LANGCHAIN_OLLAMA_MODEL| Model name for Ollama when using LangChain   | llama3.3   |
 | LANGFUSE_ENDPOINT     | Langfuse API endpoint for observability      | (optional) |
 | LANGFUSE_PUBLIC_KEY   | Langfuse public key for authentication       | (optional) |
 | LANGFUSE_SECRET_KEY   | Langfuse secret key for authentication       | (optional) |
@@ -716,7 +850,7 @@ slack-mcp-client --metrics-port 9090
 
 # Enable Langfuse tracing (example)
 export LANGFUSE_ENDPOINT="https://cloud.langfuse.com"
-export LANGFUSE_PUBLIC_KEY="pk-your-public-key"  
+export LANGFUSE_PUBLIC_KEY="pk-your-public-key"
 export LANGFUSE_SECRET_KEY="sk-your-secret-key"
 
 # Enable simple OTLP tracing (example)
@@ -751,7 +885,7 @@ All configuration is now managed through a single `config.json` file with compre
         "maxTokens": 2000
       },
       "anthropic": {
-        "model": "claude-3-5-sonnet-20241022",
+        "model": "claude-sonnet-4.5",
         "apiKey": "${ANTHROPIC_API_KEY}",
         "temperature": 0.7
       }
@@ -917,3 +1051,47 @@ Comprehensive documentation is available in the `docs/` directory:
 - **RAG SQLite**: See the [RAG SQLite Implementation](docs/rag-sqlite.md) for native Go implementation with modern upload UX
 - **Development**: Check the [Implementation Notes](docs/implementation.md) for technical details
 - **Monitoring**: See the metrics configuration section above for Prometheus integration
+<<<<<<< HEAD
+=======
+- **Dependencies**: Review [Dependencies](docs/DEPENDENCIES.md) for version tracking and upgrade history
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## CI/CD and Releases
+
+This project uses GitHub Actions for continuous integration and GoReleaser for automated releases.
+
+### Continuous Integration Checks
+
+Our CI pipeline performs the following checks on all PRs and commits to the main branch:
+
+#### Code Quality
+- **Linting**: Using golangci-lint to check for common code issues and style violations
+- **Go Module Verification**: Ensuring go.mod and go.sum are properly maintained
+- **Formatting**: Verifying code is properly formatted with gofmt
+
+#### Security
+- **Vulnerability Scanning**: Using govulncheck to check for known vulnerabilities in dependencies
+- **Dependency Scanning**: Using Trivy to scan for vulnerabilities in dependencies
+- **SBOM Generation**: Creating a Software Bill of Materials for dependency tracking
+
+#### Testing
+- **Unit Tests**: Running tests with race detection and code coverage reporting
+- **Build Verification**: Ensuring the codebase builds successfully
+
+### Release Process
+
+When changes are merged to the main branch:
+1. CI checks are run to validate code quality and security
+2. If successful, a new release is automatically created with:
+   - Semantic versioning based on commit messages
+   - Binary builds for multiple platforms
+   - Docker image publishing to GitHub Container Registry
+   - Helm chart publishing to GitHub Container Registry
+>>>>>>> main

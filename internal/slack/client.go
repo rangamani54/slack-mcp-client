@@ -299,6 +299,14 @@ func (c *Client) Run() error {
 	return c.userFrontend.Run()
 }
 
+// Close gracefully closes the Slack client
+func (c *Client) Close() error {
+	c.logger.Info("Closing Slack client...")
+	// Note: socketmode.Client doesn't have a public Close method
+	// The client will stop when the context is cancelled or when there's a connection error
+	return nil
+}
+
 // handleEvents listens for incoming events and dispatches them.
 func (c *Client) handleEvents() {
 	for evt := range c.userFrontend.GetEventChannel() {
@@ -463,6 +471,40 @@ func (c *Client) getContextFromHistory(channelID string, threadTS string) string
 func (c *Client) handleUserPrompt(userPrompt, channelID, threadTS string, timestamp string, profile *UserProfile) {
 	c.logger.DebugKV("Routing prompt via configured provider", "provider", c.cfg.LLM.Provider)
 	c.logger.DebugKV("User prompt", "text", userPrompt)
+
+	// Security validation check
+	securityResult := c.cfg.ValidateAccess(profile.userId, channelID)
+	if !securityResult.Allowed {
+		// Log unauthorized access attempt if enabled
+		if c.cfg.Security.LogUnauthorized != nil && *c.cfg.Security.LogUnauthorized {
+			c.logger.WarnKV("security: Access denied",
+				"user_id", profile.userId,
+				"channel_id", channelID,
+				"allowed", false,
+				"reason", securityResult.Reason,
+				"strict_mode", c.cfg.Security.StrictMode,
+			)
+		}
+
+		// Send rejection message if configured
+		if c.cfg.Security.RejectionMessage != "" {
+			c.userFrontend.SendMessage(channelID, threadTS, c.cfg.Security.RejectionMessage)
+		}
+
+		// Early return - do not process the request further
+		return
+	}
+
+	// Log successful access if security is enabled
+	if c.cfg.Security.Enabled {
+		c.logger.InfoKV("security: Access granted",
+			"user_id", profile.userId,
+			"channel_id", channelID,
+			"allowed", true,
+			"reason", securityResult.Reason,
+			"strict_mode", c.cfg.Security.StrictMode,
+		)
+	}
 
 	ctx, span := c.tracingHandler.StartTrace(context.Background(), "slack-user-interaction", userPrompt, map[string]string{
 		"session_id":   fmt.Sprintf("%s-%s", channelID, threadTS),
